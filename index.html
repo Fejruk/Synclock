@@ -41,6 +41,8 @@
       font-size: 14px; padding: 2px; transition: color 0.15s;
     }
     .icon-btn:hover { color: var(--text); }
+    .icon-btn.spinning { animation: spin 0.8s linear infinite; color: var(--accent); }
+    @keyframes spin { 100% { transform: rotate(360deg); } }
 
     /* Connection status */
     .conn { display: flex; gap: 10px; margin-bottom: 12px; }
@@ -187,7 +189,8 @@
       <div class="hdr">
         <h1 id="title">Early <em>&rarr;</em> Jira</h1>
         <div class="hdr-right">
-          <button class="icon-btn" id="btnSettings" title="Settings">&#9881;</button>
+          <button class="icon-btn" id="btnRefresh" title="Refresh" style="font-size:14px">&#8635;</button>
+          <button class="icon-btn" id="btnSettings" title="Settings" style="font-size:20px">&#9881;</button>
         </div>
       </div>
 

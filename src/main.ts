@@ -54,7 +54,12 @@ interface Settings {
 let currentDate = new Date();
 let calendarOpen = false;
 
-function dateStr(d: Date) { return d.toISOString().split("T")[0]; }
+function dateStr(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 function formatDateLabel(d: Date): string {
   const today = new Date();
@@ -245,11 +250,17 @@ function renderPreview(data: PreviewResponse) {
 
 async function doPreview() {
   const day = dateStr(currentDate);
+  const refreshBtn = $("btnRefresh");
+  refreshBtn.classList.add("spinning");
+  $("previewSection").style.display = "block";
+  $("entries").innerHTML = '<div class="empty">Loading...</div>';
+  $("summary").innerHTML = '';
   try {
     renderPreview(await invoke<PreviewResponse>("preview", { from: day, to: day }));
   } catch (e) {
-    $("previewSection").style.display = "block";
     $("entries").innerHTML = `<div class="empty">${esc(String(e))}</div>`;
+  } finally {
+    refreshBtn.classList.remove("spinning");
   }
 }
 
@@ -326,6 +337,7 @@ window.addEventListener("DOMContentLoaded", () => {
   updateDateLabel();
 
   $("btnSync").addEventListener("click", doSync);
+  $("btnRefresh").addEventListener("click", () => { checkStatus(); doPreview(); });
   $("btnSettings").addEventListener("click", openSettings);
   $("btnBack").addEventListener("click", () => showView("mainView"));
   $("btnSettingsCancel").addEventListener("click", () => showView("mainView"));
