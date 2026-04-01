@@ -12,7 +12,16 @@ const fmtDur = (min: number) => {
   return h > 0 && m > 0 ? `${h}h ${m}m` : h > 0 ? `${h}h` : `${m}m`;
 };
 const fmtTime = (iso: string) => {
-  const d = new Date(iso.endsWith("Z") ? iso : iso + "Z");
+  if (!iso) return "–";
+  // Handle all formats: UTC without Z (Early), ISO with Z, ISO with +offset (Toggl)
+  let str = iso;
+  if (!str.endsWith("Z") && !str.includes("+") && !str.match(/\d{2}:\d{2}$/)) {
+    str += "Z";
+  } else if (!str.endsWith("Z") && !str.includes("+") && !str.includes("-", 10)) {
+    str += "Z";
+  }
+  const d = new Date(str);
+  if (isNaN(d.getTime())) return "–";
   return d.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" });
 };
 
@@ -43,6 +52,7 @@ interface Settings {
 // ── Date state ──
 
 let currentDate = new Date();
+let calendarOpen = false;
 
 function dateStr(d: Date) { return d.toISOString().split("T")[0]; }
 
@@ -55,14 +65,107 @@ function formatDateLabel(d: Date): string {
 }
 
 function updateDateLabel() {
-  $("dateLabel").childNodes[0].textContent = formatDateLabel(currentDate);
-  ($("datePicker") as HTMLInputElement).value = dateStr(currentDate);
+  $("dateLabelText").textContent = formatDateLabel(currentDate);
 }
 
 function shiftDay(delta: number) {
   currentDate.setDate(currentDate.getDate() + delta);
   updateDateLabel();
+  closeCalendar();
   doPreview();
+}
+
+// ── Calendar ──
+
+function openCalendar() {
+  calendarOpen = true;
+  $("calendar").style.display = "block";
+  renderCalendar();
+}
+
+function closeCalendar() {
+  calendarOpen = false;
+  $("calendar").style.display = "none";
+}
+
+function toggleCalendar() {
+  if (calendarOpen) closeCalendar(); else openCalendar();
+}
+
+let calViewYear = 0;
+let calViewMonth = 0;
+
+function renderCalendar() {
+  calViewYear = calViewYear || currentDate.getFullYear();
+  calViewMonth = calViewMonth || currentDate.getMonth();
+
+  const year = calViewYear;
+  const month = calViewMonth;
+  const today = new Date();
+  const selected = dateStr(currentDate);
+
+  const monthNames = ["Leden", "Únor", "Březen", "Duben", "Květen", "Červen",
+    "Červenec", "Srpen", "Září", "Říjen", "Listopad", "Prosinec"];
+  const dayNames = ["Po", "Út", "St", "Čt", "Pá", "So", "Ne"];
+
+  const firstDay = new Date(year, month, 1);
+  let startDow = firstDay.getDay() - 1;
+  if (startDow < 0) startDow = 6;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  let html = `
+    <div class="cal-hdr">
+      <button class="cal-nav" id="calPrev">&lsaquo;</button>
+      <span class="cal-title">${monthNames[month]} ${year}</span>
+      <button class="cal-nav" id="calNext">&rsaquo;</button>
+    </div>
+    <div class="cal-days">
+      ${dayNames.map(d => `<span class="cal-dow">${d}</span>`).join("")}
+  `;
+
+  // Empty cells before first day
+  for (let i = 0; i < startDow; i++) {
+    html += `<span class="cal-day cal-empty"></span>`;
+  }
+
+  for (let day = 1; day <= daysInMonth; day++) {
+    const d = new Date(year, month, day);
+    const ds = dateStr(d);
+    const isToday = ds === dateStr(today);
+    const isSel = ds === selected;
+    const cls = ["cal-day"];
+    if (isToday) cls.push("cal-today");
+    if (isSel) cls.push("cal-sel");
+    html += `<span class="${cls.join(" ")}" data-date="${ds}">${day}</span>`;
+  }
+
+  html += `</div>`;
+  $("calendar").innerHTML = html;
+
+  // Events
+  $("calPrev").addEventListener("click", (e) => {
+    e.stopPropagation();
+    calViewMonth--;
+    if (calViewMonth < 0) { calViewMonth = 11; calViewYear--; }
+    renderCalendar();
+  });
+  $("calNext").addEventListener("click", (e) => {
+    e.stopPropagation();
+    calViewMonth++;
+    if (calViewMonth > 11) { calViewMonth = 0; calViewYear++; }
+    renderCalendar();
+  });
+
+  $("calendar").querySelectorAll(".cal-day[data-date]").forEach((el) => {
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const val = (el as HTMLElement).dataset.date!;
+      currentDate = new Date(val + "T12:00:00");
+      updateDateLabel();
+      closeCalendar();
+      doPreview();
+    });
+  });
 }
 
 // ── Views ──
@@ -168,7 +271,6 @@ async function doSync() {
     }
     html += `<div class="l-dm" style="margin-top:6px">${data.synced} synced · ${data.skipped} skipped · ${data.failed} failed</div>`;
     log.innerHTML = html;
-    // Refresh preview to show synced state
     setTimeout(() => doPreview(), 500);
   } catch (e) { log.innerHTML = `<div class="l-er">${esc(String(e))}</div>`; }
   finally { btn.disabled = false; btn.textContent = "Sync to Jira"; }
@@ -214,6 +316,7 @@ async function saveSettings() {
     await invoke("save_settings", { settings });
     showView("mainView");
     checkStatus();
+    doPreview();
   } catch (e) { alert("Error saving: " + e); }
 }
 
@@ -229,32 +332,30 @@ window.addEventListener("DOMContentLoaded", () => {
   $("btnSettingsSave").addEventListener("click", saveSettings);
   $("prevDay").addEventListener("click", () => shiftDay(-1));
   $("nextDay").addEventListener("click", () => shiftDay(1));
+  $("dateLabel").addEventListener("click", toggleCalendar);
   ($("setProvider") as HTMLSelectElement).addEventListener("change", (e) => {
     toggleProviderFields((e.target as HTMLSelectElement).value);
   });
 
-  // Click date label → open native date picker
-  $("dateLabel").addEventListener("click", () => {
-    const picker = $("datePicker") as HTMLInputElement;
-    picker.showPicker();
-  });
-  ($("datePicker") as HTMLInputElement).addEventListener("change", (e) => {
-    const val = (e.target as HTMLInputElement).value;
-    if (val) {
-      currentDate = new Date(val + "T12:00:00");
-      updateDateLabel();
-      doPreview();
+  // Close calendar when clicking outside
+  document.addEventListener("click", (e) => {
+    if (calendarOpen) {
+      const cal = $("calendar");
+      const label = $("dateLabel");
+      if (!cal.contains(e.target as Node) && !label.contains(e.target as Node)) {
+        closeCalendar();
+      }
     }
   });
 
   checkStatus();
-  doPreview(); // Auto-preview today
+  doPreview();
 
   listen("show-settings", () => openSettings());
   listen<SyncResponse>("auto-sync-done", (event) => {
     const r = event.payload;
     if (r.synced > 0) {
-      new Notification("Early → Jira Sync", { body: `Auto-synced ${r.synced} entries` });
+      new Notification("Synclock", { body: `Auto-synced ${r.synced} entries` });
     }
   });
 });

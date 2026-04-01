@@ -104,8 +104,17 @@ pub async fn add_worklog(
         (h, m) => format!("{}h {}m", h, m),
     };
 
-    // Early timestamps are UTC without Z — parse and format for Jira
-    let started_formatted = format!("{}+0000", started);
+    // Parse any timestamp format and output Jira format: yyyy-MM-dd'T'HH:mm:ss.SSS+0000
+    let started_formatted = if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(started) {
+        // Toggl: "2026-04-01T07:00:00+00:00"
+        dt.with_timezone(&chrono::Utc).format("%Y-%m-%dT%H:%M:%S%.3f+0000").to_string()
+    } else if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(started, "%Y-%m-%dT%H:%M:%S%.3f") {
+        // Early: "2026-04-01T07:00:00.000" (UTC without Z)
+        format!("{}+0000", dt.format("%Y-%m-%dT%H:%M:%S%.3f"))
+    } else {
+        // Fallback
+        format!("{}+0000", started)
+    };
 
     let mut body = serde_json::json!({
         "timeSpent": time_spent,
@@ -162,10 +171,14 @@ pub async fn test_connection() -> Result<(), String> {
     Ok(())
 }
 
-pub fn is_already_synced(worklogs: &[Worklog], early_started_at: &str, duration_min: i64) -> bool {
-    // Early timestamp is UTC without Z
-    let early_start = chrono::NaiveDateTime::parse_from_str(early_started_at, "%Y-%m-%dT%H:%M:%S%.3f")
-        .map(|dt| dt.and_utc().timestamp_millis())
+pub fn is_already_synced(worklogs: &[Worklog], started_at: &str, duration_min: i64) -> bool {
+    // Parse any format: RFC3339 (Toggl) or naive (Early UTC)
+    let early_start = chrono::DateTime::parse_from_rfc3339(started_at)
+        .map(|dt| dt.timestamp_millis())
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(started_at, "%Y-%m-%dT%H:%M:%S%.3f")
+                .map(|dt| dt.and_utc().timestamp_millis())
+        })
         .unwrap_or(0);
     let early_duration_sec = duration_min * 60;
 

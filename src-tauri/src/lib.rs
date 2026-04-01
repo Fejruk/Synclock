@@ -290,7 +290,12 @@ fn start_auto_sync(app: tauri::AppHandle) {
                 if let Ok(result) = sync(today.clone(), today.clone()).await {
                     last_sync_date = today;
                     if result.synced > 0 {
-                        let _ = app.emit("auto-sync-done", &result);
+                        // Native macOS notification
+                        let _ = tauri_plugin_notification::NotificationExt::notification(&app)
+                            .builder()
+                            .title("Synclock")
+                            .body(format!("Auto-synced {} entries to Jira", result.synced))
+                            .show();
                     }
                 }
             }
@@ -330,6 +335,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             {

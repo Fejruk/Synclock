@@ -71,10 +71,44 @@
       cursor: pointer; padding: 6px; border-radius: var(--r);
       transition: background 0.12s;
     }
-    .date-label:hover { background: rgba(255,255,255,0.06); }
-    .date-label input[type="date"] {
-      position: absolute; opacity: 0; pointer-events: none;
+    .date-label:hover { background: rgba(255,255,255,0.08); }
+
+    /* Calendar dropdown */
+    .cal {
+      display: none;
+      width: 100%;
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 10px; padding: 10px; margin-bottom: 12px;
     }
+    .cal-hdr {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .cal-title { font-size: 12px; font-weight: 600; }
+    .cal-nav {
+      background: none; border: none; color: var(--dim); cursor: pointer;
+      font-size: 16px; width: 24px; height: 24px; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.12s;
+    }
+    .cal-nav:hover { background: rgba(255,255,255,0.08); color: var(--text); }
+    .cal-days {
+      display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;
+    }
+    .cal-dow {
+      font-size: 9px; font-weight: 600; color: var(--dim); text-align: center;
+      padding: 4px 0; text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .cal-day {
+      font-size: 11px; text-align: center; padding: 5px 0;
+      border-radius: 6px; cursor: pointer; transition: all 0.1s;
+      color: var(--text);
+    }
+    .cal-day:hover { background: rgba(255,255,255,0.1); }
+    .cal-empty { cursor: default; }
+    .cal-empty:hover { background: none; }
+    .cal-today { color: var(--accent); font-weight: 700; }
+    .cal-sel { background: var(--accent) !important; color: #fff !important; font-weight: 600; }
 
     .btn {
       padding: 6px 14px; border: none; border-radius: var(--r);
@@ -173,10 +207,12 @@
       <div class="date-row">
         <button class="date-nav" id="prevDay">&lsaquo;</button>
         <div class="date-label" id="dateLabel">
-          Today
-          <input type="date" id="datePicker" />
+          <span id="dateLabelText">Dnes</span>
         </div>
         <button class="date-nav" id="nextDay">&rsaquo;</button>
+      </div>
+
+      <div class="cal" id="calendar">
       </div>
 
       <div id="previewSection" style="display:none">
