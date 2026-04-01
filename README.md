@@ -18,6 +18,14 @@ A lightweight macOS menubar app that syncs time entries from [Early](https://ear
 
 Download the latest `.dmg` from [Releases](https://github.com/Fejruk/Synclock/releases) and drag **Synclock.app** to Applications.
 
+The app is not code-signed, so macOS will block it on first launch. To fix this, run once in Terminal:
+
+```bash
+xattr -cr /Applications/Synclock.app
+```
+
+Then open Synclock normally.
+
 ### Build from source
 
 Requires [Rust](https://rustup.rs/) and [Node.js](https://nodejs.org/) (v18+).
