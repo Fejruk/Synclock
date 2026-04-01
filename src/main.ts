@@ -363,6 +363,12 @@ window.addEventListener("DOMContentLoaded", () => {
   checkStatus();
   doPreview();
 
+  // Refresh data every time panel is opened via tray click
+  listen("panel-opened", () => {
+    checkStatus();
+    doPreview();
+  });
+
   listen("show-settings", () => openSettings());
   listen<SyncResponse>("auto-sync-done", (event) => {
     const r = event.payload;

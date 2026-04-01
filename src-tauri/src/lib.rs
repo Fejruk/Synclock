@@ -324,6 +324,7 @@ fn show_window(app: &tauri::AppHandle, position: tauri::PhysicalPosition<f64>) {
         let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(x, y)));
         let _ = window.show();
         let _ = window.set_focus();
+        let _ = window.emit("panel-opened", ());
     }
 }
 
