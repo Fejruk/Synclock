@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Early → Jira Sync</title>
+  <script type="module" src="/src/main.ts" defer></script>
+  <style>
+    :root {
+      --bg: #1e1e1e;
+      --card: rgba(255,255,255,0.06);
+      --border: rgba(255,255,255,0.08);
+      --text: rgba(255,255,255,0.9);
+      --dim: rgba(255,255,255,0.4);
+      --accent: #4c9aff;
+      --green: #4ade80;
+      --red: #f87171;
+      --r: 8px;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { background: transparent; overflow: hidden; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
+      color: var(--text); -webkit-user-select: none; user-select: none;
+      -webkit-font-smoothing: antialiased; font-size: 12px;
+    }
+    .panel {
+      background: var(--bg); border-radius: 12px;
+      overflow-y: auto; max-height: 100vh;
+    }
+    .view { padding: 14px; display: none; }
+    .view.active { display: block; }
+
+    /* Header */
+    .hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .hdr h1 { font-size: 13px; font-weight: 600; letter-spacing: -0.2px; }
+    .hdr h1 em { font-style: normal; color: var(--accent); }
+    .hdr-right { display: flex; align-items: center; gap: 8px; }
+    .icon-btn {
+      background: none; border: none; color: var(--dim); cursor: pointer;
+      font-size: 14px; padding: 2px; transition: color 0.15s;
+    }
+    .icon-btn:hover { color: var(--text); }
+
+    /* Connection status */
+    .conn { display: flex; gap: 10px; margin-bottom: 12px; }
+    .conn-item {
+      flex: 1; display: flex; align-items: center; gap: 6px;
+      padding: 6px 10px; background: rgba(255,255,255,0.04);
+      border-radius: 6px; font-size: 10px; font-weight: 500;
+    }
+    .conn-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+    .conn-dot.ok { background: var(--green); }
+    .conn-dot.err { background: var(--red); }
+    .conn-dot.load { background: var(--dim); animation: pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: 0.3; } }
+    .conn-label { color: var(--dim); }
+    .conn-val { color: var(--text); margin-left: auto; font-weight: 600; }
+
+    /* Date picker row */
+    .date-row { display: flex; gap: 6px; align-items: center; margin-bottom: 12px; }
+    .date-nav {
+      background: rgba(255,255,255,0.08); border: none; color: var(--text);
+      width: 28px; height: 28px; border-radius: var(--r); cursor: pointer;
+      font-size: 14px; display: flex; align-items: center; justify-content: center;
+      transition: background 0.12s;
+    }
+    .date-nav:hover { background: rgba(255,255,255,0.14); }
+    .date-label {
+      flex: 1; text-align: center; font-size: 12px; font-weight: 600;
+      cursor: pointer; padding: 6px; border-radius: var(--r);
+      transition: background 0.12s;
+    }
+    .date-label:hover { background: rgba(255,255,255,0.06); }
+    .date-label input[type="date"] {
+      position: absolute; opacity: 0; pointer-events: none;
+    }
+
+    .btn {
+      padding: 6px 14px; border: none; border-radius: var(--r);
+      font-size: 11px; font-weight: 600; font-family: inherit;
+      cursor: pointer; transition: all 0.12s;
+    }
+    .btn:disabled { opacity: 0.3; cursor: default; }
+    .btn:active:not(:disabled) { transform: scale(0.97); }
+    .btn-g { background: rgba(255,255,255,0.08); color: var(--text); }
+    .btn-g:hover:not(:disabled) { background: rgba(255,255,255,0.12); }
+    .btn-p { background: var(--accent); color: #fff; }
+    .btn-p:hover:not(:disabled) { background: #5aa3ff; }
+    .btn-s { background: rgba(74,222,128,0.12); color: var(--green); border: 1px solid rgba(74,222,128,0.18); }
+    .btn-s:hover:not(:disabled) { background: rgba(74,222,128,0.22); }
+
+    .sep { height: 1px; background: rgba(255,255,255,0.06); margin: 10px 0; }
+
+    /* Stats */
+    .stats { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 8px; }
+    .st { font-size: 10px; padding: 3px 7px; background: rgba(255,255,255,0.04); border-radius: 5px; color: var(--dim); }
+    .st b { color: var(--accent); font-weight: 600; }
+
+    /* Entries */
+    .ent { display: flex; align-items: center; gap: 7px; padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+    .ent:last-child { border-bottom: none; }
+    .ent-d { width: 3px; height: 22px; border-radius: 2px; flex-shrink: 0; }
+    .ent-b { flex: 1; min-width: 0; }
+    .ent-t { font-size: 11px; font-weight: 500; display: flex; align-items: center; gap: 5px; }
+    .ent-sd { font-size: 8px; font-weight: 700; color: var(--green); text-transform: uppercase; letter-spacing: 0.4px; }
+    .ent-s { font-size: 10px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ent-r { text-align: right; flex-shrink: 0; }
+    .ent-dur { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .tag { display: inline-block; padding: 1px 4px; border-radius: 3px; font-size: 9px; font-weight: 700; letter-spacing: 0.2px; margin-top: 1px; }
+    .tag-j { background: rgba(76,154,255,0.12); color: var(--accent); }
+    .tag-n { background: rgba(255,255,255,0.04); color: var(--dim); }
+
+    .actions { margin-top: 10px; display: flex; justify-content: space-between; align-items: center; }
+
+    .log {
+      margin-top: 10px; max-height: 150px; overflow-y: auto;
+      font-family: 'SF Mono', Menlo, monospace; font-size: 10px; line-height: 1.7;
+      padding: 8px; background: rgba(0,0,0,0.2); border-radius: var(--r); border: 1px solid rgba(255,255,255,0.03);
+    }
+    .log::-webkit-scrollbar { width: 3px; }
+    .log::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
+    .l-ok { color: var(--green); }
+    .l-er { color: var(--red); }
+    .l-dm { color: var(--dim); }
+
+    .empty { text-align: center; padding: 20px 0; color: var(--dim); font-size: 11px; }
+
+    /* Settings */
+    input[type="text"], input[type="password"], input[type="time"], select {
+      width: 100%; padding: 6px 8px;
+      background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: var(--r); color: var(--text); font-size: 11px; font-family: inherit;
+    }
+    input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(76,154,255,0.15); }
+    select { -webkit-appearance: none; }
+    .set-group { margin-bottom: 14px; }
+    .set-group h3 { font-size: 10px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; }
+    .set-row { margin-bottom: 8px; }
+    .set-row label { display: block; font-size: 10px; color: var(--dim); margin-bottom: 3px; }
+    .set-actions { display: flex; justify-content: space-between; margin-top: 14px; }
+    .set-inline { display: flex; gap: 8px; align-items: end; }
+    .set-inline > * { flex: 1; }
+    .set-check { display: flex; align-items: center; gap: 6px; font-size: 11px; cursor: pointer; }
+    .set-check input { width: auto; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+
+    <!-- MAIN VIEW -->
+    <div class="view active" id="mainView">
+      <div class="hdr">
+        <h1 id="title">Early <em>&rarr;</em> Jira</h1>
+        <div class="hdr-right">
+          <button class="icon-btn" id="btnSettings" title="Settings">&#9881;</button>
+        </div>
+      </div>
+
+      <div class="conn" id="connStatus">
+        <div class="conn-item">
+          <span class="conn-dot load" id="provDot"></span>
+          <span class="conn-label" id="provLabel">Early</span>
+          <span class="conn-val" id="provStatus">...</span>
+        </div>
+        <div class="conn-item">
+          <span class="conn-dot load" id="jiraDot"></span>
+          <span class="conn-label">Jira</span>
+          <span class="conn-val" id="jiraStatus">...</span>
+        </div>
+      </div>
+
+      <div class="date-row">
+        <button class="date-nav" id="prevDay">&lsaquo;</button>
+        <div class="date-label" id="dateLabel">
+          Today
+          <input type="date" id="datePicker" />
+        </div>
+        <button class="date-nav" id="nextDay">&rsaquo;</button>
+      </div>
+
+      <div id="previewSection" style="display:none">
+        <div class="sep"></div>
+        <div class="stats" id="summary"></div>
+        <div id="entries"></div>
+        <div class="actions">
+          <span class="l-dm" id="syncHint"></span>
+          <button class="btn btn-s" id="btnSync">Sync to Jira</button>
+        </div>
+      </div>
+
+      <div id="logSection" style="display:none">
+        <div class="sep"></div>
+        <div class="log" id="log"></div>
+      </div>
+    </div>
+
+    <!-- SETTINGS VIEW -->
+    <div class="view" id="settingsView">
+      <div class="hdr">
+        <h1>Settings</h1>
+        <button class="icon-btn" id="btnBack" title="Back">&larr;</button>
+      </div>
+
+      <div class="set-group">
+        <h3>Time Tracking Provider</h3>
+        <div class="set-row">
+          <select id="setProvider">
+            <option value="early">Early (Timeular)</option>
+            <option value="toggl">Toggl Track</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="earlyFields">
+        <div class="set-group">
+          <h3>Early API</h3>
+          <div class="set-row"><label>API Key</label><input type="password" id="setEarlyKey" /></div>
+          <div class="set-row"><label>API Secret</label><input type="password" id="setEarlySecret" /></div>
+        </div>
+      </div>
+
+      <div id="togglFields" style="display:none">
+        <div class="set-group">
+          <h3>Toggl API</h3>
+          <div class="set-row"><label>API Token</label><input type="password" id="setTogglToken" /></div>
+        </div>
+      </div>
+
+      <div class="set-group">
+        <h3>Jira</h3>
+        <div class="set-row"><label>Base URL</label><input type="text" id="setJiraUrl" placeholder="https://yoursite.atlassian.net" /></div>
+        <div class="set-row"><label>Email</label><input type="text" id="setJiraEmail" /></div>
+        <div class="set-row"><label>API Token</label><input type="password" id="setJiraToken" /></div>
+      </div>
+
+      <div class="set-group">
+        <h3>Menubar Icon</h3>
+        <div class="set-row">
+          <select id="setTrayIcon">
+            <option value="color">Color</option>
+            <option value="mono">Monochrome</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="set-group">
+        <h3>Daily Auto-Sync</h3>
+        <div class="set-row">
+          <label class="set-check">
+            <input type="checkbox" id="setAutoEnabled" />
+            Enable daily sync
+          </label>
+        </div>
+        <div class="set-row">
+          <label>Time</label>
+          <input type="time" id="setAutoTime" value="19:00" />
+        </div>
+      </div>
+
+      <div class="set-actions">
+        <button class="btn btn-g" id="btnSettingsCancel">Cancel</button>
+        <button class="btn btn-p" id="btnSettingsSave">Save</button>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>

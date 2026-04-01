@@ -1,0 +1,260 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+
+const $ = (id: string) => document.getElementById(id)!;
+const esc = (s: string | null | undefined) => {
+  const d = document.createElement("div");
+  d.textContent = s ?? "";
+  return d.innerHTML;
+};
+const fmtDur = (min: number) => {
+  const h = Math.floor(min / 60), m = min % 60;
+  return h > 0 && m > 0 ? `${h}h ${m}m` : h > 0 ? `${h}h` : `${m}m`;
+};
+const fmtTime = (iso: string) => {
+  const d = new Date(iso.endsWith("Z") ? iso : iso + "Z");
+  return d.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" });
+};
+
+// ── Types ──
+
+interface PreviewItem {
+  id: string; activity: string; activity_color: string;
+  jira_keys: string[]; duration_min: number;
+  started_at: string; stopped_at: string;
+  note: string; has_jira_key: boolean; synced: boolean;
+}
+interface PreviewResponse { total: number; with_jira: number; items: PreviewItem[]; }
+interface SyncResultItem {
+  entry_id: string; activity: string; issue_key: string;
+  duration: string; success: boolean; skipped: boolean; error: string | null;
+}
+interface SyncResponse { synced: number; skipped: number; failed: number; results: SyncResultItem[]; }
+interface Settings {
+  provider: string;
+  early_api_key: string; early_api_secret: string;
+  toggl_api_token: string;
+  jira_base_url: string; jira_email: string; jira_api_token: string;
+  auto_sync_enabled: boolean;
+  auto_sync_time: string;
+  tray_icon: string;
+}
+
+// ── Date state ──
+
+let currentDate = new Date();
+
+function dateStr(d: Date) { return d.toISOString().split("T")[0]; }
+
+function formatDateLabel(d: Date): string {
+  const today = new Date();
+  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+  if (dateStr(d) === dateStr(today)) return "Dnes";
+  if (dateStr(d) === dateStr(yesterday)) return "Včera";
+  return d.toLocaleDateString("cs-CZ", { weekday: "short", day: "numeric", month: "short" });
+}
+
+function updateDateLabel() {
+  $("dateLabel").childNodes[0].textContent = formatDateLabel(currentDate);
+  ($("datePicker") as HTMLInputElement).value = dateStr(currentDate);
+}
+
+function shiftDay(delta: number) {
+  currentDate.setDate(currentDate.getDate() + delta);
+  updateDateLabel();
+  doPreview();
+}
+
+// ── Views ──
+
+function showView(id: string) {
+  document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
+  $(id).classList.add("active");
+}
+
+// ── Status ──
+
+async function checkStatus() {
+  const provDot = $("provDot"), jiraDot = $("jiraDot");
+  const provStatus = $("provStatus"), jiraStatus = $("jiraStatus");
+  const provLabel = $("provLabel");
+
+  try {
+    const data = await invoke<any>("check_status");
+    const provider = data.provider === "toggl" ? "Toggl" : "Early";
+    provLabel.textContent = provider;
+    $("title").innerHTML = `${provider} <em>&rarr;</em> Jira`;
+
+    provDot.className = "conn-dot " + (data.provider_ok ? "ok" : "err");
+    provStatus.textContent = data.provider_ok ? "OK" : "Error";
+
+    jiraDot.className = "conn-dot " + (data.jira?.ok ? "ok" : "err");
+    jiraStatus.textContent = data.jira?.ok ? "OK" : "Error";
+  } catch (e) {
+    provDot.className = "conn-dot err";
+    jiraDot.className = "conn-dot err";
+    provStatus.textContent = "Error";
+    jiraStatus.textContent = "Error";
+  }
+}
+
+// ── Preview ──
+
+function renderPreview(data: PreviewResponse) {
+  $("previewSection").style.display = "block";
+  $("logSection").style.display = "none";
+
+  const totalMin = data.items.reduce((s, i) => s + i.duration_min, 0);
+  const toSync = data.items.filter((i) => i.has_jira_key && !i.synced);
+  const syncMin = toSync.reduce((s, i) => s + i.duration_min, 0);
+  const synced = data.items.filter((i) => i.synced).length;
+
+  $("summary").innerHTML = [
+    `<div class="st"><b>${data.total}</b> entries</div>`,
+    toSync.length ? `<div class="st"><b>${toSync.length}</b> to sync</div>` : '',
+    synced ? `<div class="st"><b>${synced}</b> synced</div>` : '',
+    `<div class="st"><b>${fmtDur(totalMin)}</b> total</div>`,
+    syncMin ? `<div class="st"><b>${fmtDur(syncMin)}</b> pending</div>` : '',
+  ].filter(Boolean).join('');
+
+  if (data.items.length === 0) {
+    $("entries").innerHTML = '<div class="empty">No entries for this day</div>';
+  } else {
+    $("entries").innerHTML = data.items.map((item) => `
+      <div class="ent" style="opacity:${item.has_jira_key && !item.synced ? 1 : 0.4}">
+        <div class="ent-d" style="background:#${esc(item.activity_color)}"></div>
+        <div class="ent-b">
+          <div class="ent-t">${esc(item.activity)}${item.synced ? '<span class="ent-sd">synced</span>' : ""}</div>
+          <div class="ent-s">${fmtTime(item.started_at)} – ${fmtTime(item.stopped_at)}${item.note ? " · " + esc(item.note) : ""}</div>
+        </div>
+        <div class="ent-r">
+          <div class="ent-dur">${fmtDur(item.duration_min)}</div>
+          ${item.jira_keys.map((k) => `<span class="tag tag-j">${esc(k)}</span>`).join(" ")}
+          ${!item.has_jira_key ? '<span class="tag tag-n">–</span>' : ""}
+        </div>
+      </div>
+    `).join("");
+  }
+
+  ($("btnSync") as HTMLButtonElement).disabled = toSync.length === 0;
+  $("syncHint").textContent = toSync.length === 0 && data.items.length > 0 ? "All synced" : "";
+}
+
+async function doPreview() {
+  const day = dateStr(currentDate);
+  try {
+    renderPreview(await invoke<PreviewResponse>("preview", { from: day, to: day }));
+  } catch (e) {
+    $("previewSection").style.display = "block";
+    $("entries").innerHTML = `<div class="empty">${esc(String(e))}</div>`;
+  }
+}
+
+async function doSync() {
+  const day = dateStr(currentDate);
+  const btn = $("btnSync") as HTMLButtonElement;
+  btn.disabled = true; btn.textContent = "Syncing...";
+  $("logSection").style.display = "block";
+  const log = $("log");
+  log.innerHTML = '<div class="l-dm">Starting sync...</div>';
+
+  try {
+    const data = await invoke<SyncResponse>("sync", { from: day, to: day });
+    let html = "";
+    for (const r of data.results) {
+      if (r.skipped) html += `<div class="l-dm">– ${esc(r.issue_key)} synced</div>`;
+      else if (r.success) html += `<div class="l-ok">✓ ${esc(r.issue_key)} ← ${r.duration}</div>`;
+      else html += `<div class="l-er">✗ ${esc(r.issue_key)} ${esc(r.error)}</div>`;
+    }
+    html += `<div class="l-dm" style="margin-top:6px">${data.synced} synced · ${data.skipped} skipped · ${data.failed} failed</div>`;
+    log.innerHTML = html;
+    // Refresh preview to show synced state
+    setTimeout(() => doPreview(), 500);
+  } catch (e) { log.innerHTML = `<div class="l-er">${esc(String(e))}</div>`; }
+  finally { btn.disabled = false; btn.textContent = "Sync to Jira"; }
+}
+
+// ── Settings ──
+
+function toggleProviderFields(provider: string) {
+  $("earlyFields").style.display = provider === "early" ? "block" : "none";
+  $("togglFields").style.display = provider === "toggl" ? "block" : "none";
+}
+
+async function openSettings() {
+  const s = await invoke<Settings>("get_settings");
+  ($("setProvider") as HTMLSelectElement).value = s.provider;
+  ($("setEarlyKey") as HTMLInputElement).value = s.early_api_key;
+  ($("setEarlySecret") as HTMLInputElement).value = s.early_api_secret;
+  ($("setTogglToken") as HTMLInputElement).value = s.toggl_api_token;
+  ($("setJiraUrl") as HTMLInputElement).value = s.jira_base_url;
+  ($("setJiraEmail") as HTMLInputElement).value = s.jira_email;
+  ($("setJiraToken") as HTMLInputElement).value = s.jira_api_token;
+  ($("setAutoEnabled") as HTMLInputElement).checked = s.auto_sync_enabled;
+  ($("setAutoTime") as HTMLInputElement).value = s.auto_sync_time || "19:00";
+  ($("setTrayIcon") as HTMLSelectElement).value = s.tray_icon || "color";
+  toggleProviderFields(s.provider);
+  showView("settingsView");
+}
+
+async function saveSettings() {
+  const settings: Settings = {
+    provider: ($("setProvider") as HTMLSelectElement).value,
+    early_api_key: ($("setEarlyKey") as HTMLInputElement).value,
+    early_api_secret: ($("setEarlySecret") as HTMLInputElement).value,
+    toggl_api_token: ($("setTogglToken") as HTMLInputElement).value,
+    jira_base_url: ($("setJiraUrl") as HTMLInputElement).value,
+    jira_email: ($("setJiraEmail") as HTMLInputElement).value,
+    jira_api_token: ($("setJiraToken") as HTMLInputElement).value,
+    auto_sync_enabled: ($("setAutoEnabled") as HTMLInputElement).checked,
+    auto_sync_time: ($("setAutoTime") as HTMLInputElement).value,
+    tray_icon: ($("setTrayIcon") as HTMLSelectElement).value,
+  };
+  try {
+    await invoke("save_settings", { settings });
+    showView("mainView");
+    checkStatus();
+  } catch (e) { alert("Error saving: " + e); }
+}
+
+// ── Init ──
+
+window.addEventListener("DOMContentLoaded", () => {
+  updateDateLabel();
+
+  $("btnSync").addEventListener("click", doSync);
+  $("btnSettings").addEventListener("click", openSettings);
+  $("btnBack").addEventListener("click", () => showView("mainView"));
+  $("btnSettingsCancel").addEventListener("click", () => showView("mainView"));
+  $("btnSettingsSave").addEventListener("click", saveSettings);
+  $("prevDay").addEventListener("click", () => shiftDay(-1));
+  $("nextDay").addEventListener("click", () => shiftDay(1));
+  ($("setProvider") as HTMLSelectElement).addEventListener("change", (e) => {
+    toggleProviderFields((e.target as HTMLSelectElement).value);
+  });
+
+  // Click date label → open native date picker
+  $("dateLabel").addEventListener("click", () => {
+    const picker = $("datePicker") as HTMLInputElement;
+    picker.showPicker();
+  });
+  ($("datePicker") as HTMLInputElement).addEventListener("change", (e) => {
+    const val = (e.target as HTMLInputElement).value;
+    if (val) {
+      currentDate = new Date(val + "T12:00:00");
+      updateDateLabel();
+      doPreview();
+    }
+  });
+
+  checkStatus();
+  doPreview(); // Auto-preview today
+
+  listen("show-settings", () => openSettings());
+  listen<SyncResponse>("auto-sync-done", (event) => {
+    const r = event.payload;
+    if (r.synced > 0) {
+      new Notification("Early → Jira Sync", { body: `Auto-synced ${r.synced} entries` });
+    }
+  });
+});
