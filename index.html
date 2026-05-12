@@ -179,6 +179,10 @@
     .set-inline > * { flex: 1; }
     .set-check { display: flex; align-items: center; gap: 6px; font-size: 11px; cursor: pointer; }
     .set-check input { width: auto; }
+    .map-row { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+    .map-row .map-act { flex: 0 0 38%; display: flex; align-items: center; gap: 6px; font-size: 11px; }
+    .map-row .map-act .map-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .map-row select { flex: 1; }
   </style>
 </head>
 <body>
@@ -201,9 +205,9 @@
           <span class="conn-val" id="provStatus">...</span>
         </div>
         <div class="conn-item">
-          <span class="conn-dot load" id="jiraDot"></span>
-          <span class="conn-label">Jira</span>
-          <span class="conn-val" id="jiraStatus">...</span>
+          <span class="conn-dot load" id="targetDot"></span>
+          <span class="conn-label" id="targetLabel">Jira</span>
+          <span class="conn-val" id="targetStatus">...</span>
         </div>
       </div>
 
@@ -267,10 +271,38 @@
       </div>
 
       <div class="set-group">
-        <h3>Jira</h3>
-        <div class="set-row"><label>Base URL</label><input type="text" id="setJiraUrl" placeholder="https://yoursite.atlassian.net" /></div>
-        <div class="set-row"><label>Email</label><input type="text" id="setJiraEmail" /></div>
-        <div class="set-row"><label>API Token</label><input type="password" id="setJiraToken" /></div>
+        <h3>Target Tracker</h3>
+        <div class="set-row">
+          <select id="setTarget">
+            <option value="jira">Jira</option>
+            <option value="youtrack">YouTrack</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="jiraFields">
+        <div class="set-group">
+          <h3>Jira</h3>
+          <div class="set-row"><label>Base URL</label><input type="text" id="setJiraUrl" placeholder="https://yoursite.atlassian.net" /></div>
+          <div class="set-row"><label>Email</label><input type="text" id="setJiraEmail" /></div>
+          <div class="set-row"><label>API Token</label><input type="password" id="setJiraToken" /></div>
+        </div>
+      </div>
+
+      <div id="youtrackFields" style="display:none">
+        <div class="set-group">
+          <h3>YouTrack</h3>
+          <div class="set-row"><label>Base URL</label><input type="text" id="setYoutrackUrl" placeholder="https://yourcompany.youtrack.cloud" /></div>
+          <div class="set-row"><label>Permanent Token</label><input type="password" id="setYoutrackToken" /></div>
+        </div>
+      </div>
+
+      <div id="activityMapFields" style="display:none">
+        <div class="set-group">
+          <h3>Activity → YouTrack Type</h3>
+          <div id="activityMapStatus" class="set-row" style="color: var(--dim); font-size: 10px;">Loading…</div>
+          <div id="activityMapRows"></div>
+        </div>
       </div>
 
       <div class="set-group">

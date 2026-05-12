@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -35,6 +36,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub toggl_api_token: String,
 
+    // Target tracker selection
+    #[serde(default = "default_target")]
+    pub target: String, // "jira" or "youtrack"
+
     // Jira
     #[serde(default)]
     pub jira_base_url: String,
@@ -42,6 +47,16 @@ pub struct AppConfig {
     pub jira_email: String,
     #[serde(default)]
     pub jira_api_token: String,
+
+    // YouTrack
+    #[serde(default)]
+    pub youtrack_base_url: String,
+    #[serde(default)]
+    pub youtrack_token: String,
+
+    // Mapping: Early activity id → YouTrack work item type id (empty value = no type)
+    #[serde(default)]
+    pub activity_type_map: HashMap<String, String>,
 
     // Daily auto-sync
     #[serde(default)]
@@ -55,6 +70,7 @@ pub struct AppConfig {
 }
 
 fn default_provider() -> String { "early".into() }
+fn default_target() -> String { "jira".into() }
 fn default_auto_sync_time() -> String { "19:00".into() }
 fn default_tray_icon() -> String { "color".into() }
 
@@ -65,9 +81,13 @@ impl Default for AppConfig {
             early_api_key: String::new(),
             early_api_secret: String::new(),
             toggl_api_token: String::new(),
+            target: default_target(),
             jira_base_url: String::new(),
             jira_email: String::new(),
             jira_api_token: String::new(),
+            youtrack_base_url: String::new(),
+            youtrack_token: String::new(),
+            activity_type_map: HashMap::new(),
             auto_sync_enabled: false,
             auto_sync_time: default_auto_sync_time(),
             tray_icon: default_tray_icon(),
@@ -82,10 +102,13 @@ impl AppConfig {
             "toggl" => !self.toggl_api_token.is_empty(),
             _ => false,
         };
-        let has_jira = !self.jira_base_url.is_empty()
-            && !self.jira_email.is_empty()
-            && !self.jira_api_token.is_empty();
-        has_provider && has_jira
+        let has_target = match self.target.as_str() {
+            "youtrack" => !self.youtrack_base_url.is_empty() && !self.youtrack_token.is_empty(),
+            _ => !self.jira_base_url.is_empty()
+                && !self.jira_email.is_empty()
+                && !self.jira_api_token.is_empty(),
+        };
+        has_provider && has_target
     }
 }
 
@@ -137,9 +160,13 @@ fn migrate_from_env() -> AppConfig {
         early_api_key: std::env::var("EARLY_API_KEY").unwrap_or_default(),
         early_api_secret: std::env::var("EARLY_API_SECRET").unwrap_or_default(),
         toggl_api_token: std::env::var("TOGGL_API_TOKEN").unwrap_or_default(),
+        target: default_target(),
         jira_base_url: std::env::var("JIRA_BASE_URL").unwrap_or_default(),
         jira_email: std::env::var("JIRA_EMAIL").unwrap_or_default(),
         jira_api_token: std::env::var("JIRA_API_TOKEN").unwrap_or_default(),
+        youtrack_base_url: String::new(),
+        youtrack_token: String::new(),
+        activity_type_map: HashMap::new(),
         auto_sync_enabled: false,
         auto_sync_time: default_auto_sync_time(),
         tray_icon: default_tray_icon(),
@@ -181,6 +208,7 @@ pub async fn save_config(cfg: AppConfig) -> Result<(), String> {
     // Clear cached tokens since credentials may have changed
     crate::early::clear_token_cache().await;
     crate::jira::clear_cloud_id_cache().await;
+    crate::youtrack::clear_alias_cache().await;
 
     *config_lock().write().await = cfg;
     Ok(())

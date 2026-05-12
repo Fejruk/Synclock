@@ -1,14 +1,15 @@
 # Synclock
 
-A lightweight macOS menubar app that syncs time entries from [Early](https://early.app) (formerly Timeular) or [Toggl Track](https://toggl.com) to Jira worklogs.
+A lightweight macOS menubar app that syncs time entries from [Early](https://early.app) (formerly Timeular) or [Toggl Track](https://toggl.com) to Jira worklogs or YouTrack work items.
 
 ## Features
 
 - **Menubar app** — lives in the macOS menu bar, no dock icon
-- **One-click sync** — preview entries and sync to Jira with automatic deduplication
+- **One-click sync** — preview entries and sync to Jira or YouTrack with automatic deduplication
 - **Multiple providers** — supports Early (Timeular) and Toggl Track, switchable in settings
-- **Smart matching** — extracts Jira issue keys from `@IS-123` mentions (Early) or descriptions/tags (Toggl)
-- **Deduplication** — checks existing Jira worklogs before syncing, safe to run multiple times
+- **Multiple targets** — sync into Jira worklogs or YouTrack work items (switchable in settings)
+- **Smart matching** — extracts issue keys from `@IS-123` mentions (Early) or descriptions/tags (Toggl)
+- **Deduplication** — checks existing worklogs/work items before syncing, safe to run multiple times
 - **Daily auto-sync** — automatically syncs at a configured time (e.g. 19:00)
 - **Right-click menu** — quick sync today, settings, quit
 
@@ -53,12 +54,27 @@ The built app will be at `src-tauri/target/release/bundle/macos/Synclock.app`.
 
 - **API Token** — find at [Toggl Profile](https://track.toggl.com/profile)
 
+### Target tracker
+
+Pick **Jira** or **YouTrack** in Settings → Target Tracker. Both configs persist in parallel, so you can switch back and forth without re-entering credentials.
+
 ### Jira
 
 - **Base URL** — your Jira instance (e.g. `https://yoursite.atlassian.net`)
 - **Email** — your Atlassian account email
 - **API Token** — generate at [Atlassian API Tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
   - Required scopes: `read:jira-user`, `read:jira-work`, `write:jira-work`
+
+### YouTrack
+
+- **Base URL** — your YouTrack Cloud instance (e.g. `https://yourcompany.youtrack.cloud`)
+- **Permanent Token** — generate in YouTrack: Profile → Account Security → New permanent token
+
+YouTrack work items created by Synclock include a hidden marker (e.g. `[synclock:toggl-12345]`) at the end of the text. This is how the app detects already-synced entries on subsequent syncs. Don't remove the marker if you want dedup to keep working — editing the rest of the text is fine.
+
+#### Activity → YouTrack work item type (Early only)
+
+When YouTrack is the target and Early is the provider, Settings shows an **Activity → YouTrack Type** section listing your Early activities. Each row maps an activity to a YouTrack work item type (Development, Testing, Meeting, …) — pick `(no type)` to leave the type empty. Synclock applies the mapped type when creating work items, so your YouTrack reports stay grouped the same way as your Early activities.
 
 ## Usage
 
@@ -90,11 +106,13 @@ Enable in Settings → Daily Auto-Sync. Choose a time (e.g. `19:00`) and Syncloc
 ## How it works
 
 1. Fetches time entries from Early or Toggl API for the selected day
-2. Extracts Jira issue keys from mentions, tags, or descriptions
-3. Checks existing Jira worklogs to skip duplicates
-4. Creates new worklogs via the Jira REST API
+2. Extracts issue keys from mentions, tags, or descriptions
+3. Checks existing worklogs/work items in the selected target to skip duplicates
+4. Creates new worklogs via the Jira REST API, or new work items via the YouTrack REST API
 
-Deduplication matches by start time (±2 min) and duration (±1 min).
+**Jira deduplication** matches by start time (±2 min) and duration (±1 min).
+
+**YouTrack deduplication** matches by a hidden marker (`[synclock:{provider}-{entry_id}]`) appended to the work item text — works even if the day already has multiple entries with the same duration and description.
 
 ## Configuration
 

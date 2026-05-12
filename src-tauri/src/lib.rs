@@ -2,6 +2,7 @@ mod config;
 mod early;
 mod jira;
 mod toggl;
+mod youtrack;
 
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,6 +59,7 @@ struct SyncResponse {
 struct TimeEntry {
     id: String,
     activity: String,
+    activity_id: Option<String>,
     activity_color: String,
     jira_keys: Vec<String>,
     duration_min: i64,
@@ -71,6 +73,27 @@ async fn fetch_entries(from: &str, to: &str) -> Result<Vec<TimeEntry>, String> {
     match cfg.provider.as_str() {
         "toggl" => fetch_toggl_entries(from, to).await,
         _ => fetch_early_entries(from, to).await,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Target { Jira, YouTrack }
+
+fn current_target(cfg: &config::AppConfig) -> Target {
+    match cfg.target.as_str() {
+        "youtrack" => Target::YouTrack,
+        _ => Target::Jira,
+    }
+}
+
+fn dedup_marker_for(provider: &str, entry_id: &str) -> String {
+    format!("{}-{}", provider, entry_id)
+}
+
+async fn target_test_connection(target: Target) -> Result<(), String> {
+    match target {
+        Target::Jira => jira::test_connection().await,
+        Target::YouTrack => youtrack::test_connection().await,
     }
 }
 
@@ -88,6 +111,7 @@ async fn fetch_early_entries(from: &str, to: &str) -> Result<Vec<TimeEntry>, Str
         TimeEntry {
             id: e.id.clone(),
             activity: act.map(|a| a.name.clone()).unwrap_or_else(|| "Unknown".into()),
+            activity_id: Some(e.activity_id.clone()),
             activity_color: act.map(|a| a.color.clone()).unwrap_or_else(|| "888".into()),
             jira_keys: early::extract_jira_keys(e),
             duration_min: early::get_duration_minutes(e),
@@ -108,6 +132,7 @@ async fn fetch_toggl_entries(from: &str, to: &str) -> Result<Vec<TimeEntry>, Str
         TimeEntry {
             id: e.id.to_string(),
             activity: e.description.clone().unwrap_or_else(|| "No description".into()),
+            activity_id: None,
             activity_color: "6366f1".into(), // purple for Toggl
             jira_keys: toggl::extract_jira_keys(e),
             duration_min: dur_min,
@@ -137,7 +162,8 @@ async fn check_status() -> serde_json::Value {
         "toggl" => toggl::test_connection().await.is_ok(),
         _ => early::get_activities().await.is_ok(),
     };
-    let jira = match jira::test_connection().await {
+    let target = current_target(&cfg);
+    let target_check = match target_test_connection(target).await {
         Ok(()) => serde_json::json!({ "ok": true }),
         Err(e) => serde_json::json!({ "ok": false, "error": e }),
     };
@@ -145,13 +171,16 @@ async fn check_status() -> serde_json::Value {
     serde_json::json!({
         "provider": cfg.provider,
         "provider_ok": provider_ok,
-        "jira": jira,
+        "target": cfg.target,
+        "target_check": target_check,
         "configured": cfg.is_configured(),
     })
 }
 
 #[tauri::command]
 async fn preview(from: String, to: String) -> Result<PreviewResponse, String> {
+    let cfg = config::get_config().await;
+    let target = current_target(&cfg);
     let entries = fetch_entries(&from, &to).await?;
 
     let mut all_keys = std::collections::HashSet::new();
@@ -159,10 +188,22 @@ async fn preview(from: String, to: String) -> Result<PreviewResponse, String> {
         for k in &e.jira_keys { all_keys.insert(k.clone()); }
     }
 
-    let mut wl_map: std::collections::HashMap<String, Vec<jira::Worklog>> = std::collections::HashMap::new();
-    for key in &all_keys {
-        let wls = jira::get_worklogs(key).await.unwrap_or_default();
-        wl_map.insert(key.clone(), wls);
+    let mut jira_map: std::collections::HashMap<String, Vec<jira::Worklog>> = std::collections::HashMap::new();
+    let mut yt_map: std::collections::HashMap<String, Vec<youtrack::WorkItem>> = std::collections::HashMap::new();
+
+    match target {
+        Target::Jira => {
+            for key in &all_keys {
+                let wls = jira::get_worklogs(key).await.unwrap_or_default();
+                jira_map.insert(key.clone(), wls);
+            }
+        }
+        Target::YouTrack => {
+            for key in &all_keys {
+                let items = youtrack::get_work_items(key).await.unwrap_or_default();
+                yt_map.insert(key.clone(), items);
+            }
+        }
     }
 
     let items: Vec<PreviewItem> = entries.iter().map(|e| {
@@ -170,10 +211,19 @@ async fn preview(from: String, to: String) -> Result<PreviewResponse, String> {
             (e.duration_min as f64 / e.jira_keys.len() as f64).round().max(1.0) as i64
         } else { 0 };
 
-        let synced = !e.jira_keys.is_empty() && e.jira_keys.iter().all(|k| {
-            let wls = wl_map.get(k).map(|v| v.as_slice()).unwrap_or(&[]);
-            jira::is_already_synced(wls, &e.started_at, per_key)
-        });
+        let synced = !e.jira_keys.is_empty() && match target {
+            Target::Jira => e.jira_keys.iter().all(|k| {
+                let wls = jira_map.get(k).map(|v| v.as_slice()).unwrap_or(&[]);
+                jira::is_already_synced(wls, &e.started_at, per_key)
+            }),
+            Target::YouTrack => {
+                let marker = dedup_marker_for(&cfg.provider, &e.id);
+                e.jira_keys.iter().all(|k| {
+                    let items = yt_map.get(k).map(|v| v.as_slice()).unwrap_or(&[]);
+                    youtrack::is_already_synced(items, &marker)
+                })
+            }
+        };
 
         PreviewItem {
             id: e.id.clone(),
@@ -195,6 +245,8 @@ async fn preview(from: String, to: String) -> Result<PreviewResponse, String> {
 
 #[tauri::command]
 async fn sync(from: String, to: String) -> Result<SyncResponse, String> {
+    let cfg = config::get_config().await;
+    let target = current_target(&cfg);
     let entries = fetch_entries(&from, &to).await?;
     let mut results = Vec::new();
 
@@ -203,10 +255,21 @@ async fn sync(from: String, to: String) -> Result<SyncResponse, String> {
 
         let per_key = (e.duration_min as f64 / e.jira_keys.len() as f64).round().max(1.0) as i64;
         let comment = if e.note.is_empty() { e.activity.clone() } else { format!("{} - {}", e.activity, e.note) };
+        let marker = dedup_marker_for(&cfg.provider, &e.id);
 
         for key in &e.jira_keys {
-            let worklogs = jira::get_worklogs(key).await.unwrap_or_default();
-            if jira::is_already_synced(&worklogs, &e.started_at, per_key) {
+            let already_synced = match target {
+                Target::Jira => {
+                    let wls = jira::get_worklogs(key).await.unwrap_or_default();
+                    jira::is_already_synced(&wls, &e.started_at, per_key)
+                }
+                Target::YouTrack => {
+                    let items = youtrack::get_work_items(key).await.unwrap_or_default();
+                    youtrack::is_already_synced(&items, &marker)
+                }
+            };
+
+            if already_synced {
                 results.push(SyncResultItem {
                     entry_id: e.id.clone(), activity: e.activity.clone(),
                     issue_key: key.clone(), duration: String::new(),
@@ -215,7 +278,18 @@ async fn sync(from: String, to: String) -> Result<SyncResponse, String> {
                 continue;
             }
 
-            match jira::add_worklog(key, per_key, &e.started_at, &comment).await {
+            let create_result = match target {
+                Target::Jira => jira::add_worklog(key, per_key, &e.started_at, &comment).await.map(|_| ()),
+                Target::YouTrack => {
+                    let type_id = e.activity_id.as_ref()
+                        .and_then(|aid| cfg.activity_type_map.get(aid))
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.as_str());
+                    youtrack::add_work_item(key, per_key, &e.started_at, &comment, &marker, type_id).await.map(|_| ())
+                }
+            };
+
+            match create_result {
                 Ok(_) => results.push(SyncResultItem {
                     entry_id: e.id.clone(), activity: e.activity.clone(),
                     issue_key: key.clone(), duration: fmt_duration(per_key),
@@ -239,6 +313,33 @@ async fn sync(from: String, to: String) -> Result<SyncResponse, String> {
 #[tauri::command]
 async fn get_settings() -> config::AppConfig {
     config::get_config().await
+}
+
+#[derive(Clone, Serialize)]
+struct ActivityOption {
+    id: String,
+    name: String,
+    color: String,
+}
+
+#[tauri::command]
+async fn get_early_activities() -> Result<Vec<ActivityOption>, String> {
+    let acts = early::get_activities().await?;
+    let mut out: Vec<ActivityOption> = acts
+        .iter()
+        .map(|a| ActivityOption {
+            id: a.id.clone(),
+            name: a.name.clone(),
+            color: a.color.clone(),
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(out)
+}
+
+#[tauri::command]
+async fn get_youtrack_work_item_types() -> Result<Vec<youtrack::WorkItemType>, String> {
+    youtrack::get_work_item_types().await
 }
 
 #[tauri::command]
@@ -412,7 +513,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![check_status, preview, sync, get_settings, save_settings])
+        .invoke_handler(tauri::generate_handler![check_status, preview, sync, get_settings, save_settings, get_early_activities, get_youtrack_work_item_types])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

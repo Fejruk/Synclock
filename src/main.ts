@@ -43,11 +43,23 @@ interface Settings {
   provider: string;
   early_api_key: string; early_api_secret: string;
   toggl_api_token: string;
+  target: string;
   jira_base_url: string; jira_email: string; jira_api_token: string;
+  youtrack_base_url: string; youtrack_token: string;
+  activity_type_map: Record<string, string>;
   auto_sync_enabled: boolean;
   auto_sync_time: string;
   tray_icon: string;
 }
+
+interface ActivityOption { id: string; name: string; color: string; }
+interface YoutrackType { id: string; name: string; }
+
+let cachedActivities: ActivityOption[] = [];
+let cachedYtTypes: YoutrackType[] = [];
+let currentMapping: Record<string, string> = {};
+
+const targetLabel = (t: string) => t === "youtrack" ? "YouTrack" : "Jira";
 
 // ── Date state ──
 
@@ -62,10 +74,6 @@ function dateStr(d: Date) {
 }
 
 function formatDateLabel(d: Date): string {
-  const today = new Date();
-  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
-  if (dateStr(d) === dateStr(today)) return "Dnes";
-  if (dateStr(d) === dateStr(yesterday)) return "Včera";
   return d.toLocaleDateString("cs-CZ", { weekday: "short", day: "numeric", month: "short" });
 }
 
@@ -183,26 +191,29 @@ function showView(id: string) {
 // ── Status ──
 
 async function checkStatus() {
-  const provDot = $("provDot"), jiraDot = $("jiraDot");
-  const provStatus = $("provStatus"), jiraStatus = $("jiraStatus");
-  const provLabel = $("provLabel");
+  const provDot = $("provDot"), targetDot = $("targetDot");
+  const provStatus = $("provStatus"), targetStatus = $("targetStatus");
+  const provLabel = $("provLabel"), tgtLabel = $("targetLabel");
 
   try {
     const data = await invoke<any>("check_status");
     const provider = data.provider === "toggl" ? "Toggl" : "Early";
+    const target = targetLabel(data.target);
     provLabel.textContent = provider;
-    $("title").innerHTML = `${provider} <em>&rarr;</em> Jira`;
+    tgtLabel.textContent = target;
+    $("title").innerHTML = `${provider} <em>&rarr;</em> ${target}`;
+    ($("btnSync") as HTMLButtonElement).textContent = `Sync to ${target}`;
 
     provDot.className = "conn-dot " + (data.provider_ok ? "ok" : "err");
     provStatus.textContent = data.provider_ok ? "OK" : "Error";
 
-    jiraDot.className = "conn-dot " + (data.jira?.ok ? "ok" : "err");
-    jiraStatus.textContent = data.jira?.ok ? "OK" : "Error";
+    targetDot.className = "conn-dot " + (data.target_check?.ok ? "ok" : "err");
+    targetStatus.textContent = data.target_check?.ok ? "OK" : "Error";
   } catch (e) {
     provDot.className = "conn-dot err";
-    jiraDot.className = "conn-dot err";
+    targetDot.className = "conn-dot err";
     provStatus.textContent = "Error";
-    jiraStatus.textContent = "Error";
+    targetStatus.textContent = "Error";
   }
 }
 
@@ -284,7 +295,14 @@ async function doSync() {
     log.innerHTML = html;
     setTimeout(() => doPreview(), 500);
   } catch (e) { log.innerHTML = `<div class="l-er">${esc(String(e))}</div>`; }
-  finally { btn.disabled = false; btn.textContent = "Sync to Jira"; }
+  finally {
+    btn.disabled = false;
+    // Restore label using current settings target.
+    try {
+      const s = await invoke<Settings>("get_settings");
+      btn.textContent = `Sync to ${targetLabel(s.target)}`;
+    } catch { btn.textContent = "Sync"; }
+  }
 }
 
 // ── Settings ──
@@ -294,19 +312,94 @@ function toggleProviderFields(provider: string) {
   $("togglFields").style.display = provider === "toggl" ? "block" : "none";
 }
 
+function toggleTargetFields(target: string) {
+  $("jiraFields").style.display = target === "jira" ? "block" : "none";
+  $("youtrackFields").style.display = target === "youtrack" ? "block" : "none";
+  updateActivityMapVisibility();
+}
+
+function updateActivityMapVisibility() {
+  const provider = ($("setProvider") as HTMLSelectElement).value;
+  const target = ($("setTarget") as HTMLSelectElement).value;
+  const show = provider === "early" && target === "youtrack";
+  $("activityMapFields").style.display = show ? "block" : "none";
+  if (show) loadActivityMap();
+}
+
+function renderActivityMap() {
+  const rows = $("activityMapRows");
+  const status = $("activityMapStatus");
+
+  if (cachedActivities.length === 0) {
+    status.textContent = "No Early activities found — fill in API key/secret and save first.";
+    rows.innerHTML = "";
+    return;
+  }
+
+  status.style.display = "none";
+
+  rows.innerHTML = cachedActivities.map((a) => {
+    const selected = currentMapping[a.id] ?? "";
+    const options = [
+      `<option value="">(no type)</option>`,
+      ...cachedYtTypes.map((t) => `<option value="${esc(t.id)}" ${t.id === selected ? "selected" : ""}>${esc(t.name)}</option>`),
+    ].join("");
+    return `
+      <div class="map-row" data-activity="${esc(a.id)}">
+        <div class="map-act">
+          <span class="map-dot" style="background:#${esc(a.color)}"></span>
+          <span>${esc(a.name)}</span>
+        </div>
+        <select class="map-select">${options}</select>
+      </div>
+    `;
+  }).join("");
+
+  rows.querySelectorAll(".map-row").forEach((row) => {
+    const activityId = (row as HTMLElement).dataset.activity!;
+    const sel = row.querySelector<HTMLSelectElement>(".map-select")!;
+    sel.addEventListener("change", () => {
+      currentMapping[activityId] = sel.value;
+    });
+  });
+}
+
+async function loadActivityMap() {
+  const status = $("activityMapStatus");
+  status.style.display = "block";
+  status.textContent = "Loading…";
+  try {
+    const [activities, types] = await Promise.all([
+      invoke<ActivityOption[]>("get_early_activities"),
+      invoke<YoutrackType[]>("get_youtrack_work_item_types"),
+    ]);
+    cachedActivities = activities;
+    cachedYtTypes = types;
+    renderActivityMap();
+  } catch (e) {
+    status.textContent = `Could not load: ${String(e)}`;
+    $("activityMapRows").innerHTML = "";
+  }
+}
+
 async function openSettings() {
   const s = await invoke<Settings>("get_settings");
   ($("setProvider") as HTMLSelectElement).value = s.provider;
   ($("setEarlyKey") as HTMLInputElement).value = s.early_api_key;
   ($("setEarlySecret") as HTMLInputElement).value = s.early_api_secret;
   ($("setTogglToken") as HTMLInputElement).value = s.toggl_api_token;
+  ($("setTarget") as HTMLSelectElement).value = s.target || "jira";
   ($("setJiraUrl") as HTMLInputElement).value = s.jira_base_url;
   ($("setJiraEmail") as HTMLInputElement).value = s.jira_email;
   ($("setJiraToken") as HTMLInputElement).value = s.jira_api_token;
+  ($("setYoutrackUrl") as HTMLInputElement).value = s.youtrack_base_url || "";
+  ($("setYoutrackToken") as HTMLInputElement).value = s.youtrack_token || "";
   ($("setAutoEnabled") as HTMLInputElement).checked = s.auto_sync_enabled;
   ($("setAutoTime") as HTMLInputElement).value = s.auto_sync_time || "19:00";
   ($("setTrayIcon") as HTMLSelectElement).value = s.tray_icon || "color";
+  currentMapping = { ...(s.activity_type_map || {}) };
   toggleProviderFields(s.provider);
+  toggleTargetFields(s.target || "jira");
   showView("settingsView");
 }
 
@@ -316,9 +409,13 @@ async function saveSettings() {
     early_api_key: ($("setEarlyKey") as HTMLInputElement).value,
     early_api_secret: ($("setEarlySecret") as HTMLInputElement).value,
     toggl_api_token: ($("setTogglToken") as HTMLInputElement).value,
+    target: ($("setTarget") as HTMLSelectElement).value,
     jira_base_url: ($("setJiraUrl") as HTMLInputElement).value,
     jira_email: ($("setJiraEmail") as HTMLInputElement).value,
     jira_api_token: ($("setJiraToken") as HTMLInputElement).value,
+    youtrack_base_url: ($("setYoutrackUrl") as HTMLInputElement).value,
+    youtrack_token: ($("setYoutrackToken") as HTMLInputElement).value,
+    activity_type_map: currentMapping,
     auto_sync_enabled: ($("setAutoEnabled") as HTMLInputElement).checked,
     auto_sync_time: ($("setAutoTime") as HTMLInputElement).value,
     tray_icon: ($("setTrayIcon") as HTMLSelectElement).value,
@@ -347,6 +444,10 @@ window.addEventListener("DOMContentLoaded", () => {
   $("dateLabel").addEventListener("click", toggleCalendar);
   ($("setProvider") as HTMLSelectElement).addEventListener("change", (e) => {
     toggleProviderFields((e.target as HTMLSelectElement).value);
+    updateActivityMapVisibility();
+  });
+  ($("setTarget") as HTMLSelectElement).addEventListener("change", (e) => {
+    toggleTargetFields((e.target as HTMLSelectElement).value);
   });
 
   // Close calendar when clicking outside
@@ -363,8 +464,13 @@ window.addEventListener("DOMContentLoaded", () => {
   checkStatus();
   doPreview();
 
-  // Refresh data every time panel is opened via tray click
+  // Reset to today and refresh whenever panel is opened via tray click
   listen("panel-opened", () => {
+    currentDate = new Date();
+    calViewYear = currentDate.getFullYear();
+    calViewMonth = currentDate.getMonth();
+    updateDateLabel();
+    closeCalendar();
     checkStatus();
     doPreview();
   });

@@ -1,7 +1,7 @@
 [package]
 name = "synclock"
-version = "0.1.2"
-description = "Sync time entries from Early/Toggl to Jira worklogs"
+version = "0.2.0"
+description = "Sync time entries from Early/Toggl to Jira worklogs or YouTrack work items"
 authors = ["Tadeáš Kulhánek"]
 edition = "2021"
 
