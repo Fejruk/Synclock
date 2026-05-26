@@ -153,14 +153,62 @@ struct ActivitiesResponse {
     activities: Vec<Activity>,
 }
 
+/// Convert a local calendar date (`YYYY-MM-DD`) plus a wall-clock time into the
+/// timestamp string Timeular expects. Timeular filters and stores in UTC, so the
+/// user's local day boundaries must be translated to UTC — otherwise entries near
+/// local midnight (e.g. 01:00 in CEST = 23:00 UTC the previous day) get grouped
+/// under the wrong calendar day in the panel.
+fn local_datetime_to_utc_string(date: &str, h: u32, m: u32, s: u32, ms: u32) -> Result<String, String> {
+    use chrono::{Duration, Local, LocalResult, NaiveDate, TimeZone, Utc};
+    let day = NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|e| format!("Invalid date '{}': {}", date, e))?;
+    let naive = day
+        .and_hms_milli_opt(h, m, s, ms)
+        .ok_or_else(|| format!("Invalid time for date '{}'", date))?;
+    let local_dt = match Local.from_local_datetime(&naive) {
+        LocalResult::Single(dt) => dt,
+        LocalResult::Ambiguous(dt, _) => dt, // DST fall-back: take the earlier instant
+        LocalResult::None => {
+            // DST spring-forward gap (rare at day boundaries): nudge past it.
+            Local
+                .from_local_datetime(&(naive + Duration::hours(1)))
+                .single()
+                .ok_or_else(|| format!("Unresolvable local time for date '{}'", date))?
+        }
+    };
+    Ok(local_dt
+        .with_timezone(&Utc)
+        .format("%Y-%m-%dT%H:%M:%S%.3f")
+        .to_string())
+}
+
+/// Parse a naive UTC timestamp (the format Timeular/Early use, no offset) into
+/// milliseconds since the epoch. Accepts both with- and without-millisecond forms.
+fn naive_utc_ms(s: &str) -> Option<i64> {
+    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.3f")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S"))
+        .ok()
+        .map(|dt| dt.and_utc().timestamp_millis())
+}
+
 pub async fn get_time_entries(from: &str, to: &str) -> Result<Vec<TimeEntry>, String> {
-    let data = early_fetch(&format!(
-        "/time-entries/{}T00:00:00.000/{}T23:59:59.999",
-        from, to
-    )).await?;
+    let start = local_datetime_to_utc_string(from, 0, 0, 0, 0)?;
+    let end = local_datetime_to_utc_string(to, 23, 59, 59, 999)?;
+    let data = early_fetch(&format!("/time-entries/{}/{}", start, end)).await?;
 
     let resp: TimeEntriesResponse = serde_json::from_value(data).map_err(|e| e.to_string())?;
-    Ok(resp.time_entries)
+
+    // Timeular returns every entry that *overlaps* the window, so an entry that
+    // started the previous local day but ran past midnight comes back too. Keep
+    // only entries that actually *started* on/after the range start, so a
+    // midnight-spanning entry appears on its start day rather than on both days.
+    // (Unparseable timestamps are kept rather than silently dropped.)
+    let start_ms = naive_utc_ms(&start).unwrap_or(i64::MIN);
+    Ok(resp
+        .time_entries
+        .into_iter()
+        .filter(|e| naive_utc_ms(&e.duration.started_at).map_or(true, |ms| ms >= start_ms))
+        .collect())
 }
 
 pub async fn get_activities() -> Result<Vec<Activity>, String> {
@@ -355,5 +403,56 @@ mod tests {
             clean_note_text("<{{|m|100|}}> and <{{|m|200|}}>"),
             "and"
         );
+    }
+
+    // ── local_datetime_to_utc_string ──
+
+    fn parse_utc_ms(s: &str) -> i64 {
+        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.3f")
+            .unwrap()
+            .and_utc()
+            .timestamp_millis()
+    }
+
+    #[test]
+    fn day_bounds_span_full_day() {
+        // 2026-05-26 has no DST transition in any common zone, so a local
+        // [00:00:00.000 .. 23:59:59.999] window is exactly 86_399_999 ms wide
+        // regardless of the machine's timezone offset.
+        let start = local_datetime_to_utc_string("2026-05-26", 0, 0, 0, 0).unwrap();
+        let end = local_datetime_to_utc_string("2026-05-26", 23, 59, 59, 999).unwrap();
+        assert_eq!(parse_utc_ms(&end) - parse_utc_ms(&start), 86_399_999);
+    }
+
+    #[test]
+    fn produces_parseable_utc_format() {
+        let s = local_datetime_to_utc_string("2026-01-15", 0, 0, 0, 0).unwrap();
+        // Must round-trip through the same naive-UTC format the rest of the code uses.
+        assert!(chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S%.3f").is_ok());
+    }
+
+    #[test]
+    fn rejects_bad_date() {
+        assert!(local_datetime_to_utc_string("not-a-date", 0, 0, 0, 0).is_err());
+    }
+
+    // ── naive_utc_ms ──
+
+    #[test]
+    fn parses_millis_form() {
+        assert_eq!(naive_utc_ms("2026-05-26T23:00:00.000"), Some(1779836400000));
+    }
+
+    #[test]
+    fn parses_without_millis() {
+        assert_eq!(
+            naive_utc_ms("2026-05-26T23:00:00"),
+            naive_utc_ms("2026-05-26T23:00:00.000")
+        );
+    }
+
+    #[test]
+    fn naive_utc_ms_rejects_garbage() {
+        assert_eq!(naive_utc_ms("nope"), None);
     }
 }

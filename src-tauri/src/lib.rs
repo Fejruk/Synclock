@@ -511,7 +511,7 @@ pub fn run() {
                     "sync_today" => {
                         let app = app.clone();
                         tauri::async_runtime::spawn(async move {
-                            let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
                             let result = sync(today.clone(), today).await;
                             let _ = app.emit("quick-sync-result", &result);
                         });
