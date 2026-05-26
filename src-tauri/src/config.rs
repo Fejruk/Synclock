@@ -54,6 +54,11 @@ pub struct AppConfig {
     #[serde(default)]
     pub youtrack_token: String,
 
+    // Fallback issue key used when a time entry has no detected issue key.
+    // Empty = entries without a key are skipped (the original behavior).
+    #[serde(default)]
+    pub default_issue_key: String,
+
     // Mapping: Early activity id → YouTrack work item type id (empty value = no type)
     #[serde(default)]
     pub activity_type_map: HashMap<String, String>,
@@ -87,6 +92,7 @@ impl Default for AppConfig {
             jira_api_token: String::new(),
             youtrack_base_url: String::new(),
             youtrack_token: String::new(),
+            default_issue_key: String::new(),
             activity_type_map: HashMap::new(),
             auto_sync_enabled: false,
             auto_sync_time: default_auto_sync_time(),
@@ -166,6 +172,7 @@ fn migrate_from_env() -> AppConfig {
         jira_api_token: std::env::var("JIRA_API_TOKEN").unwrap_or_default(),
         youtrack_base_url: String::new(),
         youtrack_token: String::new(),
+        default_issue_key: String::new(),
         activity_type_map: HashMap::new(),
         auto_sync_enabled: false,
         auto_sync_time: default_auto_sync_time(),

@@ -242,21 +242,40 @@ pub async fn get_work_items(issue_key: &str) -> Result<Vec<WorkItem>, String> {
     let resolved = resolve_issue_id(issue_key).await?;
     let (base, token) = config_async().await?;
     let client = reqwest::Client::new();
-    let url = format!(
-        "{}/api/issues/{}/timeTracking/workItems?fields=id,date,duration(minutes),text",
-        base, resolved
-    );
-    let resp = client
-        .get(&url)
-        .headers(auth_headers(&token)?)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
 
-    if !resp.status().is_success() {
-        return Ok(vec![]);
+    // YouTrack caps the response at a default page size (42) when `$top` is
+    // omitted. High-volume issues (e.g. shared "management" buckets) accumulate
+    // far more work items than that, so the most recent ones — including our
+    // synclock dedup markers — fall outside the first page and the entry looks
+    // unsynced even though it was already logged. Page explicitly to get them all.
+    const PAGE: usize = 200;
+    let mut all: Vec<WorkItem> = Vec::new();
+    let mut skip = 0usize;
+    loop {
+        let url = format!(
+            "{}/api/issues/{}/timeTracking/workItems?fields=id,date,duration(minutes),text&$top={}&$skip={}",
+            base, resolved, PAGE, skip
+        );
+        let resp = client
+            .get(&url)
+            .headers(auth_headers(&token)?)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if !resp.status().is_success() {
+            return Ok(all);
+        }
+
+        let page = resp.json::<Vec<WorkItem>>().await.map_err(|e| e.to_string())?;
+        let got = page.len();
+        all.extend(page);
+        if got < PAGE {
+            break;
+        }
+        skip += PAGE;
     }
-    resp.json::<Vec<WorkItem>>().await.map_err(|e| e.to_string())
+    Ok(all)
 }
 
 /// Convert a time entry's start timestamp into the ms-since-epoch of UTC midnight

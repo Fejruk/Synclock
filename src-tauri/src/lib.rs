@@ -70,10 +70,24 @@ struct TimeEntry {
 
 async fn fetch_entries(from: &str, to: &str) -> Result<Vec<TimeEntry>, String> {
     let cfg = config::get_config().await;
-    match cfg.provider.as_str() {
+    let mut entries = match cfg.provider.as_str() {
         "toggl" => fetch_toggl_entries(from, to).await,
         _ => fetch_early_entries(from, to).await,
+    }?;
+
+    // Entries with no issue key detected in the time tracker fall back to the
+    // configured default task (if any). Applied here so both preview and sync
+    // see the same keys — the preview then shows where untagged time will land.
+    let default_key = cfg.default_issue_key.trim();
+    if !default_key.is_empty() {
+        for e in &mut entries {
+            if e.jira_keys.is_empty() {
+                e.jira_keys.push(default_key.to_string());
+            }
+        }
     }
+
+    Ok(entries)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -388,6 +402,10 @@ fn start_auto_sync(app: tauri::AppHandle) {
 
             // Is it past the configured time?
             if current_time >= cfg.auto_sync_time {
+                let target_name = match current_target(&cfg) {
+                    Target::YouTrack => "YouTrack",
+                    Target::Jira => "Jira",
+                };
                 if let Ok(result) = sync(today.clone(), today.clone()).await {
                     last_sync_date = today;
                     if result.synced > 0 {
@@ -395,7 +413,7 @@ fn start_auto_sync(app: tauri::AppHandle) {
                         let _ = tauri_plugin_notification::NotificationExt::notification(&app)
                             .builder()
                             .title("Synclock")
-                            .body(format!("Auto-synced {} entries to Jira", result.synced))
+                            .body(format!("Auto-synced {} entries to {}", result.synced, target_name))
                             .show();
                     }
                 }

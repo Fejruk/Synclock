@@ -46,6 +46,7 @@ interface Settings {
   target: string;
   jira_base_url: string; jira_email: string; jira_api_token: string;
   youtrack_base_url: string; youtrack_token: string;
+  default_issue_key: string;
   activity_type_map: Record<string, string>;
   auto_sync_enabled: boolean;
   auto_sync_time: string;
@@ -394,6 +395,7 @@ async function openSettings() {
   ($("setJiraToken") as HTMLInputElement).value = s.jira_api_token;
   ($("setYoutrackUrl") as HTMLInputElement).value = s.youtrack_base_url || "";
   ($("setYoutrackToken") as HTMLInputElement).value = s.youtrack_token || "";
+  ($("setDefaultIssueKey") as HTMLInputElement).value = s.default_issue_key || "";
   ($("setAutoEnabled") as HTMLInputElement).checked = s.auto_sync_enabled;
   ($("setAutoTime") as HTMLInputElement).value = s.auto_sync_time || "19:00";
   ($("setTrayIcon") as HTMLSelectElement).value = s.tray_icon || "color";
@@ -415,6 +417,7 @@ async function saveSettings() {
     jira_api_token: ($("setJiraToken") as HTMLInputElement).value,
     youtrack_base_url: ($("setYoutrackUrl") as HTMLInputElement).value,
     youtrack_token: ($("setYoutrackToken") as HTMLInputElement).value,
+    default_issue_key: ($("setDefaultIssueKey") as HTMLInputElement).value.trim(),
     activity_type_map: currentMapping,
     auto_sync_enabled: ($("setAutoEnabled") as HTMLInputElement).checked,
     auto_sync_time: ($("setAutoTime") as HTMLInputElement).value,
