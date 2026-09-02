@@ -118,73 +118,18 @@ impl AppConfig {
     }
 }
 
-/// Load config from file, falling back to .env migration
+/// Load config from file. A missing or unreadable file yields defaults.
 pub fn load_config() {
-    let path = config_path();
-    let cfg = if path.exists() {
-        match fs::read_to_string(&path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-            Err(_) => AppConfig::default(),
-        }
-    } else {
-        // Try migrating from .env
-        migrate_from_env()
-    };
+    let cfg = fs::read_to_string(config_path())
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_default();
 
     // Also set env vars for backward compat with early.rs / jira.rs
     apply_to_env(&cfg);
 
     let lock = config_lock();
     *lock.blocking_write() = cfg;
-}
-
-fn migrate_from_env() -> AppConfig {
-    // Try loading .env from various locations
-    let locations = [
-        std::env::current_dir().ok().map(|p| p.join(".env")),
-        std::env::current_exe().ok().and_then(|p| {
-            let mut dir = p.parent().map(|d| d.to_path_buf());
-            while let Some(d) = dir {
-                let candidate = d.join(".env");
-                if candidate.exists() { return Some(candidate); }
-                dir = d.parent().map(|p| p.to_path_buf());
-            }
-            None
-        }),
-    ];
-
-    for loc in locations.iter().flatten() {
-        if loc.exists() {
-            let _ = dotenvy::from_path(loc);
-            eprintln!("Migrated .env from: {}", loc.display());
-            break;
-        }
-    }
-
-    let cfg = AppConfig {
-        provider: "early".into(),
-        early_api_key: std::env::var("EARLY_API_KEY").unwrap_or_default(),
-        early_api_secret: std::env::var("EARLY_API_SECRET").unwrap_or_default(),
-        toggl_api_token: std::env::var("TOGGL_API_TOKEN").unwrap_or_default(),
-        target: default_target(),
-        jira_base_url: std::env::var("JIRA_BASE_URL").unwrap_or_default(),
-        jira_email: std::env::var("JIRA_EMAIL").unwrap_or_default(),
-        jira_api_token: std::env::var("JIRA_API_TOKEN").unwrap_or_default(),
-        youtrack_base_url: String::new(),
-        youtrack_token: String::new(),
-        default_issue_key: String::new(),
-        activity_type_map: HashMap::new(),
-        auto_sync_enabled: false,
-        auto_sync_time: default_auto_sync_time(),
-        tray_icon: default_tray_icon(),
-    };
-
-    // Save migrated config
-    if cfg.is_configured() {
-        let _ = save_config_to_file(&cfg);
-    }
-
-    cfg
 }
 
 fn apply_to_env(cfg: &AppConfig) {

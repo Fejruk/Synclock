@@ -151,7 +151,7 @@ struct IssueIdResponse {
     id_readable: String,
 }
 
-/// Resolve a possibly-foreign issue key (e.g. legacy Jira `IS-6562`) to the
+/// Resolve a possibly-foreign issue key (e.g. a legacy Jira key like `PROJ-123`) to the
 /// actual YouTrack readable id. If the key already exists in YouTrack, returns it
 /// unchanged. Otherwise searches for an issue whose body contains
 /// `Migrated from JIRA: <key>` and returns that issue's idReadable. Caches results

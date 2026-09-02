@@ -136,6 +136,7 @@
     /* Entries */
     .ent { display: flex; align-items: center; gap: 7px; padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
     .ent:last-child { border-bottom: none; }
+    .ent-dim { opacity: 0.4; }
     .ent-d { width: 3px; height: 22px; border-radius: 2px; flex-shrink: 0; }
     .ent-b { flex: 1; min-width: 0; }
     .ent-t { font-size: 11px; font-weight: 500; display: flex; align-items: center; gap: 5px; }
@@ -159,6 +160,7 @@
     .l-ok { color: var(--green); }
     .l-er { color: var(--red); }
     .l-dm { color: var(--dim); }
+    .l-sum { margin-top: 6px; }
 
     .empty { text-align: center; padding: 20px 0; color: var(--dim); font-size: 11px; }
 
@@ -183,6 +185,11 @@
     .map-row .map-act { flex: 0 0 38%; display: flex; align-items: center; gap: 6px; font-size: 11px; }
     .map-row .map-act .map-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
     .map-row select { flex: 1; }
+    .set-hint { color: var(--dim); font-size: 10px; }
+    #btnRefresh { font-size: 14px; }
+    #btnSettings { font-size: 20px; }
+    /* Hidden until main.ts toggles them (inline style attributes are blocked by the CSP) */
+    #previewSection, #logSection, #togglFields, #youtrackFields, #activityMapFields { display: none; }
   </style>
 </head>
 <body>
@@ -193,8 +200,8 @@
       <div class="hdr">
         <h1 id="title">Early <em>&rarr;</em> Jira</h1>
         <div class="hdr-right">
-          <button class="icon-btn" id="btnRefresh" title="Refresh" style="font-size:14px">&#8635;</button>
-          <button class="icon-btn" id="btnSettings" title="Settings" style="font-size:20px">&#9881;</button>
+          <button class="icon-btn" id="btnRefresh" title="Refresh">&#8635;</button>
+          <button class="icon-btn" id="btnSettings" title="Settings">&#9881;</button>
         </div>
       </div>
 
@@ -222,7 +229,7 @@
       <div class="cal" id="calendar">
       </div>
 
-      <div id="previewSection" style="display:none">
+      <div id="previewSection">
         <div class="sep"></div>
         <div class="stats" id="summary"></div>
         <div id="entries"></div>
@@ -232,7 +239,7 @@
         </div>
       </div>
 
-      <div id="logSection" style="display:none">
+      <div id="logSection">
         <div class="sep"></div>
         <div class="log" id="log"></div>
       </div>
@@ -263,7 +270,7 @@
         </div>
       </div>
 
-      <div id="togglFields" style="display:none">
+      <div id="togglFields">
         <div class="set-group">
           <h3>Toggl API</h3>
           <div class="set-row"><label>API Token</label><input type="password" id="setTogglToken" /></div>
@@ -286,7 +293,7 @@
           <label>Issue key</label>
           <input type="text" id="setDefaultIssueKey" placeholder="e.g. SIG-523 (optional)" />
         </div>
-        <div class="set-row" style="color: var(--dim); font-size: 10px;">
+        <div class="set-row set-hint">
           Used when no issue key is found in a time entry. Leave empty to skip untagged entries.
         </div>
       </div>
@@ -300,7 +307,7 @@
         </div>
       </div>
 
-      <div id="youtrackFields" style="display:none">
+      <div id="youtrackFields">
         <div class="set-group">
           <h3>YouTrack</h3>
           <div class="set-row"><label>Base URL</label><input type="text" id="setYoutrackUrl" placeholder="https://yourcompany.youtrack.cloud" /></div>
@@ -308,10 +315,10 @@
         </div>
       </div>
 
-      <div id="activityMapFields" style="display:none">
+      <div id="activityMapFields">
         <div class="set-group">
           <h3>Activity → YouTrack Type</h3>
-          <div id="activityMapStatus" class="set-row" style="color: var(--dim); font-size: 10px;">Loading…</div>
+          <div id="activityMapStatus" class="set-row set-hint">Loading…</div>
           <div id="activityMapRows"></div>
         </div>
       </div>

@@ -7,6 +7,12 @@ const esc = (s: string | null | undefined) => {
   d.textContent = s ?? "";
   return d.innerHTML;
 };
+// Inline `style` attributes are blocked by the CSP, so dynamic colors go through the CSSOM.
+const applyDotColors = (root: HTMLElement) => {
+  root.querySelectorAll<HTMLElement>("[data-color]").forEach((el) => {
+    el.style.background = `#${el.dataset.color}`;
+  });
+};
 const fmtDur = (min: number) => {
   const h = Math.floor(min / 60), m = min % 60;
   return h > 0 && m > 0 ? `${h}h ${m}m` : h > 0 ? `${h}h` : `${m}m`;
@@ -241,8 +247,8 @@ function renderPreview(data: PreviewResponse) {
     $("entries").innerHTML = '<div class="empty">No entries for this day</div>';
   } else {
     $("entries").innerHTML = data.items.map((item) => `
-      <div class="ent" style="opacity:${item.has_jira_key && !item.synced ? 1 : 0.4}">
-        <div class="ent-d" style="background:#${esc(item.activity_color)}"></div>
+      <div class="ent${item.has_jira_key && !item.synced ? "" : " ent-dim"}">
+        <div class="ent-d" data-color="${esc(item.activity_color)}"></div>
         <div class="ent-b">
           <div class="ent-t">${esc(item.activity)}${item.synced ? '<span class="ent-sd">synced</span>' : ""}</div>
           <div class="ent-s">${fmtTime(item.started_at)} – ${fmtTime(item.stopped_at)}${item.note ? " · " + esc(item.note) : ""}</div>
@@ -254,6 +260,7 @@ function renderPreview(data: PreviewResponse) {
         </div>
       </div>
     `).join("");
+    applyDotColors($("entries"));
   }
 
   ($("btnSync") as HTMLButtonElement).disabled = toSync.length === 0;
@@ -292,7 +299,7 @@ async function doSync() {
       else if (r.success) html += `<div class="l-ok">✓ ${esc(r.issue_key)} ← ${r.duration}</div>`;
       else html += `<div class="l-er">✗ ${esc(r.issue_key)} ${esc(r.error)}</div>`;
     }
-    html += `<div class="l-dm" style="margin-top:6px">${data.synced} synced · ${data.skipped} skipped · ${data.failed} failed</div>`;
+    html += `<div class="l-dm l-sum">${data.synced} synced · ${data.skipped} skipped · ${data.failed} failed</div>`;
     log.innerHTML = html;
     setTimeout(() => doPreview(), 500);
   } catch (e) { log.innerHTML = `<div class="l-er">${esc(String(e))}</div>`; }
@@ -348,13 +355,14 @@ function renderActivityMap() {
     return `
       <div class="map-row" data-activity="${esc(a.id)}">
         <div class="map-act">
-          <span class="map-dot" style="background:#${esc(a.color)}"></span>
+          <span class="map-dot" data-color="${esc(a.color)}"></span>
           <span>${esc(a.name)}</span>
         </div>
         <select class="map-select">${options}</select>
       </div>
     `;
   }).join("");
+  applyDotColors(rows);
 
   rows.querySelectorAll(".map-row").forEach((row) => {
     const activityId = (row as HTMLElement).dataset.activity!;
