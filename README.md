@@ -8,7 +8,7 @@ A lightweight macOS menubar app that syncs time entries from [Early](https://ear
 - **One-click sync** — preview entries and sync to Jira or YouTrack with automatic deduplication
 - **Multiple providers** — supports Early (Timeular) and Toggl Track, switchable in settings
 - **Multiple targets** — sync into Jira worklogs or YouTrack work items (switchable in settings)
-- **Smart matching** — extracts issue keys from `@IS-123` mentions (Early) or descriptions/tags (Toggl)
+- **Smart matching** — extracts issue keys from `@PROJ-123` mentions (Early) or descriptions/tags (Toggl)
 - **Deduplication** — checks existing worklogs/work items before syncing, safe to run multiple times
 - **Daily auto-sync** — automatically syncs at a configured time (e.g. 19:00)
 - **Right-click menu** — quick sync today, settings, quit
@@ -80,9 +80,9 @@ When YouTrack is the target and Early is the provider, Settings shows an **Activ
 
 ### Linking time entries to Jira issues
 
-**Early:** Type `@IS-123` in the time entry notes. Early creates a mention that Synclock picks up automatically.
+**Early:** Type `@PROJ-123` in the time entry notes. Early creates a mention that Synclock picks up automatically.
 
-**Toggl:** Include the issue key anywhere in the description (e.g. `IS-123 Standup`) or add it as a tag.
+**Toggl:** Include the issue key anywhere in the description (e.g. `PROJ-123 Standup`) or add it as a tag.
 
 ### Syncing
 
