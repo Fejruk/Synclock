@@ -33,18 +33,41 @@ const fmtTime = (iso: string) => {
 
 // ── Types ──
 
+type Action = "ok" | "create" | "update" | "delete" | "blocked";
+interface PreviewOp {
+  entry_id: string; day: string; action: Action;
+  issue: string; minutes: number; detail: string;
+}
 interface PreviewItem {
   id: string; activity: string; activity_color: string;
   jira_keys: string[]; duration_min: number;
   started_at: string; stopped_at: string;
   note: string; has_jira_key: boolean; synced: boolean;
+  ops: PreviewOp[];
 }
-interface PreviewResponse { total: number; with_jira: number; items: PreviewItem[]; }
+interface PlanSummary {
+  create: number; update: number; delete: number; ok: number; blocked: number;
+  minutes_missing: number; minutes_extra: number;
+  deletes_need_confirm: boolean; window_from: string; window_to: string;
+}
+interface PreviewResponse {
+  total: number; with_jira: number; items: PreviewItem[];
+  other_ops: PreviewOp[]; summary: PlanSummary;
+}
 interface SyncResultItem {
-  entry_id: string; activity: string; issue_key: string;
+  entry_id: string; activity: string; issue_key: string; action: Action;
   duration: string; success: boolean; skipped: boolean; error: string | null;
 }
-interface SyncResponse { synced: number; skipped: number; failed: number; results: SyncResultItem[]; }
+interface SyncResponse {
+  synced: number; created: number; updated: number; deleted: number;
+  skipped: number; failed: number; deletes_pending: number;
+  pending_deletes: PendingDelete[];
+  results: SyncResultItem[];
+}
+interface PendingDelete {
+  item_id: string; activity: string; issue: string;
+  day: string; minutes: number; reason: string;
+}
 interface Settings {
   provider: string;
   early_api_key: string; early_api_secret: string;
@@ -54,6 +77,8 @@ interface Settings {
   youtrack_base_url: string; youtrack_token: string;
   default_issue_key: string;
   activity_type_map: Record<string, string>;
+  sync_window_days: number;
+  max_deletes_without_confirm: number;
   auto_sync_enabled: boolean;
   auto_sync_time: string;
   tray_icon: string;
@@ -226,45 +251,79 @@ async function checkStatus() {
 
 // ── Preview ──
 
+const actionTag: Record<Action, string> = {
+  ok: "tag-j", create: "tag-c", update: "tag-u", delete: "tag-d", blocked: "tag-d",
+};
+const fmtDay = (day: string) => day ? new Date(day + "T12:00:00").toLocaleDateString("cs-CZ", { day: "numeric", month: "numeric" }) : "";
+
+function opTag(op: PreviewOp) {
+  const label = op.action === "ok" ? op.issue : `${op.action === "create" ? "+" : op.action === "delete" ? "−" : "~"} ${op.issue}`;
+  const title = [op.action, fmtDur(op.minutes), op.detail].filter(Boolean).join(" · ");
+  return op.action === "blocked"
+    ? `<span class="tag tag-d" title="${esc(op.detail)}">!</span>`
+    : `<span class="tag ${actionTag[op.action]}" title="${esc(title)}">${esc(label)}</span>`;
+}
+
 function renderPreview(data: PreviewResponse) {
   $("previewSection").style.display = "block";
   $("logSection").style.display = "none";
 
-  const totalMin = data.items.reduce((s, i) => s + i.duration_min, 0);
-  const toSync = data.items.filter((i) => i.has_jira_key && !i.synced);
-  const syncMin = toSync.reduce((s, i) => s + i.duration_min, 0);
+  const s = data.summary;
+  const totalMin = data.items.reduce((acc, i) => acc + i.duration_min, 0);
+  const changes = s.create + s.update + s.delete;
   const synced = data.items.filter((i) => i.synced).length;
 
   $("summary").innerHTML = [
     `<div class="st"><b>${data.total}</b> entries</div>`,
-    toSync.length ? `<div class="st"><b>${toSync.length}</b> to sync</div>` : '',
-    synced ? `<div class="st"><b>${synced}</b> synced</div>` : '',
     `<div class="st"><b>${fmtDur(totalMin)}</b> total</div>`,
-    syncMin ? `<div class="st"><b>${fmtDur(syncMin)}</b> pending</div>` : '',
+    synced ? `<div class="st"><b>${synced}</b> synced</div>` : '',
+    s.create ? `<div class="st"><b>${s.create}</b> to add</div>` : '',
+    s.update ? `<div class="st"><b>${s.update}</b> to update</div>` : '',
+    s.delete ? `<div class="st"><b>${s.delete}</b> to delete</div>` : '',
+    s.blocked ? `<div class="st"><b>${s.blocked}</b> blocked</div>` : '',
+    s.minutes_missing ? `<div class="st"><b>+${fmtDur(s.minutes_missing)}</b> missing</div>` : '',
+    s.minutes_extra ? `<div class="st"><b>−${fmtDur(s.minutes_extra)}</b> extra</div>` : '',
   ].filter(Boolean).join('');
 
   if (data.items.length === 0) {
     $("entries").innerHTML = '<div class="empty">No entries for this day</div>';
   } else {
-    $("entries").innerHTML = data.items.map((item) => `
-      <div class="ent${item.has_jira_key && !item.synced ? "" : " ent-dim"}">
+    $("entries").innerHTML = data.items.map((item) => {
+      const pending = item.ops.some((o) => o.action !== "ok");
+      const details = item.ops.filter((o) => o.detail && o.action !== "blocked").map((o) => `${o.issue}: ${o.detail}`);
+      const blocked = item.ops.filter((o) => o.action === "blocked").map((o) => o.detail);
+      return `
+      <div class="ent${pending || (item.has_jira_key && !item.synced) ? "" : " ent-dim"}">
         <div class="ent-d" data-color="${esc(item.activity_color)}"></div>
         <div class="ent-b">
           <div class="ent-t">${esc(item.activity)}${item.synced ? '<span class="ent-sd">synced</span>' : ""}</div>
           <div class="ent-s">${fmtTime(item.started_at)} – ${fmtTime(item.stopped_at)}${item.note ? " · " + esc(item.note) : ""}</div>
+          ${details.length || blocked.length ? `<div class="ent-op">${esc([...details, ...blocked].join(" · "))}</div>` : ""}
         </div>
         <div class="ent-r">
           <div class="ent-dur">${fmtDur(item.duration_min)}</div>
-          ${item.jira_keys.map((k) => `<span class="tag tag-j">${esc(k)}</span>`).join(" ")}
+          ${item.ops.length ? item.ops.map(opTag).join(" ") : item.jira_keys.map((k) => `<span class="tag tag-j">${esc(k)}</span>`).join(" ")}
           ${!item.has_jira_key ? '<span class="tag tag-n">–</span>' : ""}
         </div>
       </div>
-    `).join("");
+    `;
+    }).join("");
     applyDotColors($("entries"));
   }
 
-  ($("btnSync") as HTMLButtonElement).disabled = toSync.length === 0;
-  $("syncHint").textContent = toSync.length === 0 && data.items.length > 0 ? "All synced" : "";
+  const other = data.other_ops;
+  $("otherOps").innerHTML = other.length === 0 ? "" : `
+    <div class="other-h">Other days ${fmtDay(s.window_from)}–${fmtDay(s.window_to)}</div>
+    ${other.map((o) => `
+      <div class="other-r">
+        ${opTag(o)} <b>${fmtDay(o.day)}</b> ${fmtDur(o.minutes)}${o.detail ? " · " + esc(o.detail) : ""}
+      </div>`).join("")}
+  `;
+
+  ($("btnSync") as HTMLButtonElement).disabled = changes === 0;
+  $("syncHint").textContent = changes === 0 && data.items.length > 0
+    ? "All synced"
+    : s.deletes_need_confirm ? "Deletions will ask for confirmation" : "";
 }
 
 async function doPreview() {
@@ -283,25 +342,54 @@ async function doPreview() {
   }
 }
 
-async function doSync() {
+const logLine = (r: SyncResultItem) => {
+  const what = `${esc(r.issue_key)} ${r.duration ? "· " + esc(r.duration) : ""}`;
+  if (!r.success) return `<div class="l-er">✗ ${esc(r.action)} ${what} ${esc(r.error)}</div>`;
+  switch (r.action) {
+    case "create": return `<div class="l-ok">+ ${what}</div>`;
+    case "update": return `<div class="l-ok">~ ${what}</div>`;
+    case "delete": return `<div class="l-ok">− ${what}</div>`;
+    default: return `<div class="l-dm">– ${esc(r.issue_key)} synced</div>`;
+  }
+};
+
+// Deletions held back by the last sync; confirming approves exactly these.
+let pendingDeleteIds: string[] = [];
+
+async function doSync(confirmedDeletes: string[] = []) {
   const day = dateStr(currentDate);
   const btn = $("btnSync") as HTMLButtonElement;
   btn.disabled = true; btn.textContent = "Syncing...";
   $("logSection").style.display = "block";
+  $("confirmRow").style.display = "none";
   const log = $("log");
   log.innerHTML = '<div class="l-dm">Starting sync...</div>';
 
+  let pending = 0;
   try {
-    const data = await invoke<SyncResponse>("sync", { from: day, to: day });
-    let html = "";
-    for (const r of data.results) {
-      if (r.skipped) html += `<div class="l-dm">– ${esc(r.issue_key)} synced</div>`;
-      else if (r.success) html += `<div class="l-ok">✓ ${esc(r.issue_key)} ← ${r.duration}</div>`;
-      else html += `<div class="l-er">✗ ${esc(r.issue_key)} ${esc(r.error)}</div>`;
-    }
-    html += `<div class="l-dm l-sum">${data.synced} synced · ${data.skipped} skipped · ${data.failed} failed</div>`;
+    const data = await invoke<SyncResponse>("sync", { from: day, to: day, confirmedDeletes });
+    // Changes first, unchanged items last.
+    const rows = [...data.results].sort((a, b) => Number(a.skipped) - Number(b.skipped));
+    let html = rows.map(logLine).join("");
+    const parts = [
+      `${data.created} added`, `${data.updated} updated`, `${data.deleted} deleted`,
+      `${data.skipped} unchanged`, `${data.failed} failed`,
+    ];
+    html += `<div class="l-dm l-sum">${parts.join(" · ")}</div>`;
     log.innerHTML = html;
-    setTimeout(() => doPreview(), 500);
+    pending = data.deletes_pending;
+    pendingDeleteIds = data.pending_deletes.map((d) => d.item_id);
+    if (pending > 0) {
+      html += `<div class="l-dm l-sum">Awaiting confirmation:</div>` + data.pending_deletes.map((d) =>
+        `<div class="l-er">? − ${esc(d.issue)} · ${fmtDay(d.day)} · ${fmtDur(d.minutes)} · ${esc(d.activity)} (${esc(d.reason)})</div>`
+      ).join("");
+      log.innerHTML = html;
+      $("confirmHint").textContent = `${pending} work items to delete — review them above.`;
+      ($("btnConfirmDelete") as HTMLButtonElement).textContent = `Delete ${pending}`;
+      $("confirmRow").style.display = "flex";
+    }
+    // Keep the log and confirm button visible while deletions await a decision.
+    if (pending === 0) setTimeout(() => doPreview(), 500);
   } catch (e) { log.innerHTML = `<div class="l-er">${esc(String(e))}</div>`; }
   finally {
     btn.disabled = false;
@@ -404,6 +492,8 @@ async function openSettings() {
   ($("setYoutrackUrl") as HTMLInputElement).value = s.youtrack_base_url || "";
   ($("setYoutrackToken") as HTMLInputElement).value = s.youtrack_token || "";
   ($("setDefaultIssueKey") as HTMLInputElement).value = s.default_issue_key || "";
+  ($("setSyncWindowDays") as HTMLInputElement).value = String(s.sync_window_days ?? 14);
+  ($("setMaxDeletes") as HTMLInputElement).value = String(s.max_deletes_without_confirm ?? 10);
   ($("setAutoEnabled") as HTMLInputElement).checked = s.auto_sync_enabled;
   ($("setAutoTime") as HTMLInputElement).value = s.auto_sync_time || "19:00";
   ($("setTrayIcon") as HTMLSelectElement).value = s.tray_icon || "color";
@@ -427,6 +517,11 @@ async function saveSettings() {
     youtrack_token: ($("setYoutrackToken") as HTMLInputElement).value,
     default_issue_key: ($("setDefaultIssueKey") as HTMLInputElement).value.trim(),
     activity_type_map: currentMapping,
+    sync_window_days: Math.max(1, parseInt(($("setSyncWindowDays") as HTMLInputElement).value, 10) || 14),
+    max_deletes_without_confirm: (() => {
+      const n = parseInt(($("setMaxDeletes") as HTMLInputElement).value, 10);
+      return Number.isNaN(n) ? 10 : Math.max(0, n);
+    })(),
     auto_sync_enabled: ($("setAutoEnabled") as HTMLInputElement).checked,
     auto_sync_time: ($("setAutoTime") as HTMLInputElement).value,
     tray_icon: ($("setTrayIcon") as HTMLSelectElement).value,
@@ -444,7 +539,8 @@ async function saveSettings() {
 window.addEventListener("DOMContentLoaded", () => {
   updateDateLabel();
 
-  $("btnSync").addEventListener("click", doSync);
+  $("btnSync").addEventListener("click", () => doSync());
+  $("btnConfirmDelete").addEventListener("click", () => doSync(pendingDeleteIds));
   $("btnRefresh").addEventListener("click", () => { checkStatus(); doPreview(); });
   $("btnSettings").addEventListener("click", openSettings);
   $("btnBack").addEventListener("click", () => showView("mainView"));

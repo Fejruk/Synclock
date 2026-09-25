@@ -63,6 +63,14 @@ pub struct AppConfig {
     #[serde(default)]
     pub activity_type_map: HashMap<String, String>,
 
+    // YouTrack reconciliation: every sync brings the last N days in line with
+    // the time tracker (creates, updates and deletes), not just the chosen day.
+    #[serde(default = "default_sync_window_days")]
+    pub sync_window_days: u32,
+    // More deletions than this in one sync wait for confirmation in the panel.
+    #[serde(default = "default_max_deletes_without_confirm")]
+    pub max_deletes_without_confirm: usize,
+
     // Daily auto-sync
     #[serde(default)]
     pub auto_sync_enabled: bool,
@@ -78,6 +86,8 @@ fn default_provider() -> String { "early".into() }
 fn default_target() -> String { "jira".into() }
 fn default_auto_sync_time() -> String { "19:00".into() }
 fn default_tray_icon() -> String { "color".into() }
+fn default_sync_window_days() -> u32 { 14 }
+fn default_max_deletes_without_confirm() -> usize { 10 }
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -94,6 +104,8 @@ impl Default for AppConfig {
             youtrack_token: String::new(),
             default_issue_key: String::new(),
             activity_type_map: HashMap::new(),
+            sync_window_days: default_sync_window_days(),
+            max_deletes_without_confirm: default_max_deletes_without_confirm(),
             auto_sync_enabled: false,
             auto_sync_time: default_auto_sync_time(),
             tray_icon: default_tray_icon(),

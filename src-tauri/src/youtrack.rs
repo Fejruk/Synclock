@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use tokio::sync::Mutex;
 
+use crate::reconcile::{compose_text, Change, Desired};
+
 static ALIAS_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
 
 fn alias_cache() -> &'static Mutex<HashMap<String, String>> {
@@ -38,7 +40,6 @@ fn auth_headers(token: &str) -> Result<HeaderMap, String> {
     Ok(h)
 }
 
-#[allow(dead_code)] // fields populated via serde, only `text` is currently consumed
 #[derive(Debug, Clone, Deserialize)]
 pub struct WorkItem {
     #[serde(default)]
@@ -49,13 +50,30 @@ pub struct WorkItem {
     pub duration: WorkItemDuration,
     #[serde(default)]
     pub text: String,
+    #[serde(default, rename = "type")]
+    pub item_type: Option<IdRef>,
+    #[serde(default)]
+    pub issue: Option<IssueRef>,
+    #[serde(default)]
+    pub author: Option<IdRef>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct WorkItemDuration {
     #[serde(default)]
     pub minutes: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct IdRef {
+    #[serde(default)]
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct IssueRef {
+    #[serde(rename = "idReadable", default)]
+    pub id_readable: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
@@ -186,8 +204,15 @@ pub async fn resolve_issue_id(issue_key: &str) -> Result<String, String> {
         return Ok(resolved);
     }
 
-    // 2) Fall back to text search for the migration marker.
-    let query = format!("Migrated from JIRA: {}", issue_key);
+    // Only a definite "no such issue" may fall through to the alias search. A
+    // transient failure (429, 5xx, …) must stay an error: a guessed alias would
+    // make the sync move the entry's work items to the wrong issue.
+    if direct.status() != reqwest::StatusCode::NOT_FOUND {
+        return Err(format!("YouTrack issue '{}' lookup failed ({})", issue_key, direct.status()));
+    }
+
+    // 2) Fall back to an exact-phrase search for the migration marker.
+    let query = format!("\"Migrated from JIRA: {}\"", issue_key);
     let search_url = format!(
         "{}/api/issues?fields=idReadable&$top=5&query={}",
         base,
@@ -209,11 +234,13 @@ pub async fn resolve_issue_id(issue_key: &str) -> Result<String, String> {
     }
 
     let candidates: Vec<IssueIdResponse> = resp.json().await.map_err(|e| e.to_string())?;
-    let resolved = candidates
-        .into_iter()
-        .map(|c| c.id_readable)
-        .find(|s| !s.is_empty())
-        .ok_or_else(|| format!("YouTrack issue '{}' not found (no migration alias either)", issue_key))?;
+    let mut found: Vec<String> = candidates.into_iter().map(|c| c.id_readable).filter(|s| !s.is_empty()).collect();
+    found.dedup();
+    let resolved = match found.as_slice() {
+        [one] => one.clone(),
+        [] => return Err(format!("YouTrack issue '{}' not found (no migration alias either)", issue_key)),
+        many => return Err(format!("YouTrack issue '{}' is ambiguous: {} all mention it as migrated", issue_key, many.join(", "))),
+    };
 
     alias_cache()
         .lock()
@@ -238,33 +265,46 @@ fn urlencoding_encode(input: &str) -> String {
     out
 }
 
-pub async fn get_work_items(issue_key: &str) -> Result<Vec<WorkItem>, String> {
-    let resolved = resolve_issue_id(issue_key).await?;
+/// All work items authored by the token's user dated within `from..=to`
+/// (`YYYY-MM-DD`, inclusive), across every issue. Fails instead of returning a
+/// partial list — the caller deletes items it doesn't see an entry for, so a
+/// silently truncated list must never be mistaken for the full picture.
+pub async fn get_my_work_items(from: &str, to: &str) -> Result<Vec<WorkItem>, String> {
     let (base, token) = config_async().await?;
     let client = reqwest::Client::new();
 
-    // YouTrack caps the response at a default page size (42) when `$top` is
-    // omitted. High-volume issues (e.g. shared "management" buckets) accumulate
-    // far more work items than that, so the most recent ones — including our
-    // synclock dedup markers — fall outside the first page and the entry looks
-    // unsynced even though it was already logged. Page explicitly to get them all.
-    const PAGE: usize = 200;
+    // `author=me` filters server-side; the author is checked again below so a
+    // server ignoring the parameter can never hand us colleagues' items to delete.
+    let me: IdRef = send_checked(
+        client.get(format!("{}/api/users/me?fields=id", base)).headers(auth_headers(&token)?),
+    )
+    .await?
+    .json()
+    .await
+    .map_err(|e| e.to_string())?;
+    if me.id.is_empty() {
+        return Err("Could not determine the YouTrack user".into());
+    }
+
+    const PAGE: usize = 500;
     let mut all: Vec<WorkItem> = Vec::new();
     let mut skip = 0usize;
     loop {
         let url = format!(
-            "{}/api/issues/{}/timeTracking/workItems?fields=id,date,duration(minutes),text&$top={}&$skip={}",
-            base, resolved, PAGE, skip
+            "{}/api/workItems?author=me&startDate={}&endDate={}&fields=id,date,duration(minutes),text,type(id),issue(idReadable),author(id)&$top={}&$skip={}",
+            base, from, to, PAGE, skip
         );
         let resp = client
             .get(&url)
             .headers(auth_headers(&token)?)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("YouTrack work items request failed: {}", e))?;
 
         if !resp.status().is_success() {
-            return Ok(all);
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("Failed to load YouTrack work items ({}): {}", status, body));
         }
 
         let page = resp.json::<Vec<WorkItem>>().await.map_err(|e| e.to_string())?;
@@ -275,13 +315,16 @@ pub async fn get_work_items(issue_key: &str) -> Result<Vec<WorkItem>, String> {
         }
         skip += PAGE;
     }
-    Ok(all)
+    Ok(all
+        .into_iter()
+        .filter(|w| w.author.as_ref().is_some_and(|a| a.id == me.id))
+        .collect())
 }
 
 /// Convert a time entry's start timestamp into the ms-since-epoch of UTC midnight
 /// of the *local* calendar day that contains it. Mirrors the "today" logic used by
 /// `start_auto_sync` (chrono::Local).
-fn started_to_local_day_ms(started_at: &str) -> i64 {
+pub fn started_to_local_day_ms(started_at: &str) -> i64 {
     let utc_dt: DateTime<Utc> = if let Ok(dt) = DateTime::parse_from_rfc3339(started_at) {
         dt.with_timezone(&Utc)
     } else if let Ok(naive) = NaiveDateTime::parse_from_str(started_at, "%Y-%m-%dT%H:%M:%S%.3f") {
@@ -296,108 +339,79 @@ fn started_to_local_day_ms(started_at: &str) -> i64 {
     Utc.from_utc_datetime(&local_midnight).timestamp_millis()
 }
 
-pub async fn add_work_item(
-    issue_key: &str,
-    minutes: i64,
-    started_at: &str,
-    comment: &str,
-    dedup_marker: &str,
-    type_id: Option<&str>,
-) -> Result<String, String> {
-    let resolved = resolve_issue_id(issue_key).await?;
-    let (base, token) = config_async().await?;
-    let date_ms = started_to_local_day_ms(started_at);
-
-    let text = if comment.is_empty() {
-        format!("[synclock:{}]", dedup_marker)
-    } else {
-        format!("{}\n\n[synclock:{}]", comment, dedup_marker)
-    };
-
-    let mut body = serde_json::json!({
-        "date": date_ms,
-        "duration": { "minutes": minutes },
-        "text": text,
-    });
-    if let Some(tid) = type_id {
-        if !tid.is_empty() {
-            body["type"] = serde_json::json!({ "id": tid });
-        }
-    }
-
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(format!(
-            "{}/api/issues/{}/timeTracking/workItems?fields=id",
-            base, resolved
-        ))
-        .headers(auth_headers(&token)?)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
+async fn send_checked(req: reqwest::RequestBuilder) -> Result<reqwest::Response, String> {
+    let resp = req.send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
         return Err(format!("{}: {}", status, text));
     }
+    Ok(resp)
+}
 
+/// Create a work item on `desired.issue` (already a resolved readable id).
+pub async fn create_work_item(desired: &Desired, provider_marker: &str) -> Result<String, String> {
+    let (base, token) = config_async().await?;
+
+    let mut body = serde_json::json!({
+        "date": desired.date_ms,
+        "duration": { "minutes": desired.minutes },
+        "text": compose_text(&desired.text, provider_marker),
+    });
+    if let Some(tid) = &desired.type_id {
+        body["type"] = serde_json::json!({ "id": tid });
+    }
+
+    let resp = send_checked(
+        reqwest::Client::new()
+            .post(format!("{}/api/issues/{}/timeTracking/workItems?fields=id", base, desired.issue))
+            .headers(auth_headers(&token)?)
+            .json(&body),
+    )
+    .await?;
     let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
     Ok(data["id"].as_str().unwrap_or("").to_string())
 }
 
-pub fn is_already_synced(items: &[WorkItem], dedup_marker: &str) -> bool {
-    let needle = format!("[synclock:{}]", dedup_marker);
-    items.iter().any(|w| w.text.contains(&needle))
-}
+/// Update only the fields listed in `changes`.
+pub async fn update_work_item(
+    item_id: &str,
+    desired: &Desired,
+    changes: &[Change],
+    provider_marker: &str,
+) -> Result<(), String> {
+    let (base, token) = config_async().await?;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn item(text: &str) -> WorkItem {
-        WorkItem {
-            id: "1".into(),
-            date: 0,
-            duration: WorkItemDuration { minutes: 30 },
-            text: text.into(),
+    let mut body = serde_json::json!({});
+    for change in changes {
+        match change {
+            Change::Duration { to, .. } => body["duration"] = serde_json::json!({ "minutes": to }),
+            Change::Date { to, .. } => body["date"] = serde_json::json!(to),
+            Change::Type { to, .. } => body["type"] = serde_json::json!({ "id": to }),
+            Change::Text => body["text"] = serde_json::json!(compose_text(&desired.text, provider_marker)),
         }
     }
 
-    #[test]
-    fn finds_marker() {
-        let items = vec![item("Standup\n\n[synclock:toggl-123]")];
-        assert!(is_already_synced(&items, "toggl-123"));
-    }
+    send_checked(
+        reqwest::Client::new()
+            .post(format!(
+                "{}/api/issues/{}/timeTracking/workItems/{}?fields=id",
+                base, desired.issue, item_id
+            ))
+            .headers(auth_headers(&token)?)
+            .json(&body),
+    )
+    .await
+    .map(|_| ())
+}
 
-    #[test]
-    fn no_marker() {
-        let items = vec![item("Just a regular work item")];
-        assert!(!is_already_synced(&items, "toggl-123"));
-    }
-
-    #[test]
-    fn different_marker() {
-        let items = vec![item("[synclock:early-abc]")];
-        assert!(!is_already_synced(&items, "toggl-123"));
-    }
-
-    #[test]
-    fn marker_in_middle() {
-        let items = vec![item("Pre [synclock:toggl-123] post")];
-        assert!(is_already_synced(&items, "toggl-123"));
-    }
-
-    #[test]
-    fn empty_items() {
-        assert!(!is_already_synced(&[], "toggl-123"));
-    }
-
-    #[test]
-    fn provider_prefix_disambiguates() {
-        // Same numeric id but different provider — must not match.
-        let items = vec![item("[synclock:early-123]")];
-        assert!(!is_already_synced(&items, "toggl-123"));
-    }
+pub async fn delete_work_item(issue: &str, item_id: &str) -> Result<(), String> {
+    let (base, token) = config_async().await?;
+    send_checked(
+        reqwest::Client::new()
+            .delete(format!("{}/api/issues/{}/timeTracking/workItems/{}", base, issue, item_id))
+            .headers(auth_headers(&token)?),
+    )
+    .await
+    .map(|_| ())
 }

@@ -147,6 +147,15 @@
     .tag { display: inline-block; padding: 1px 4px; border-radius: 3px; font-size: 9px; font-weight: 700; letter-spacing: 0.2px; margin-top: 1px; }
     .tag-j { background: rgba(76,154,255,0.12); color: var(--accent); }
     .tag-n { background: rgba(255,255,255,0.04); color: var(--dim); }
+    .tag-c { background: rgba(74,222,128,0.12); color: var(--green); }
+    .tag-u { background: rgba(251,191,36,0.14); color: #fbbf24; }
+    .tag-d { background: rgba(248,113,113,0.14); color: var(--red); }
+    .ent-op { font-size: 9px; color: var(--dim); }
+
+    .other { margin-top: 8px; font-size: 10px; }
+    .other-h { color: var(--dim); margin-bottom: 3px; }
+    .other-r { display: flex; gap: 5px; align-items: center; padding: 2px 0; color: var(--dim); }
+    .other-r b { color: var(--text); font-weight: 500; }
 
     .actions { margin-top: 10px; display: flex; justify-content: space-between; align-items: center; }
 
@@ -161,11 +170,14 @@
     .l-er { color: var(--red); }
     .l-dm { color: var(--dim); }
     .l-sum { margin-top: 6px; }
+    .confirm { margin-top: 8px; display: none; justify-content: space-between; align-items: center; gap: 8px; }
+    .btn-d { background: rgba(248,113,113,0.12); color: var(--red); border: 1px solid rgba(248,113,113,0.2); }
+    .btn-d:hover:not(:disabled) { background: rgba(248,113,113,0.22); }
 
     .empty { text-align: center; padding: 20px 0; color: var(--dim); font-size: 11px; }
 
     /* Settings */
-    input[type="text"], input[type="password"], input[type="time"], select {
+    input[type="text"], input[type="password"], input[type="time"], input[type="number"], select {
       width: 100%; padding: 6px 8px;
       background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.1);
       border-radius: var(--r); color: var(--text); font-size: 11px; font-family: inherit;
@@ -233,6 +245,7 @@
         <div class="sep"></div>
         <div class="stats" id="summary"></div>
         <div id="entries"></div>
+        <div class="other" id="otherOps"></div>
         <div class="actions">
           <span class="l-dm" id="syncHint"></span>
           <button class="btn btn-s" id="btnSync">Sync to Jira</button>
@@ -242,6 +255,10 @@
       <div id="logSection">
         <div class="sep"></div>
         <div class="log" id="log"></div>
+        <div class="confirm" id="confirmRow">
+          <span class="l-dm" id="confirmHint"></span>
+          <button class="btn btn-d" id="btnConfirmDelete">Delete</button>
+        </div>
       </div>
     </div>
 
@@ -312,6 +329,9 @@
           <h3>YouTrack</h3>
           <div class="set-row"><label>Base URL</label><input type="text" id="setYoutrackUrl" placeholder="https://yourcompany.youtrack.cloud" /></div>
           <div class="set-row"><label>Permanent Token</label><input type="password" id="setYoutrackToken" /></div>
+          <div class="set-row"><label>Sync window (days)</label><input type="number" min="1" max="90" id="setSyncWindowDays" /></div>
+          <div class="set-row"><label>Deletions without confirmation</label><input type="number" min="0" id="setMaxDeletes" /></div>
+          <div class="set-row set-hint">Every sync brings the last N days in line with the tracker: new entries are added, edits are updated, deleted entries are removed. Only work items created by Synclock are touched.</div>
         </div>
       </div>
 
