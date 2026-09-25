@@ -3,6 +3,8 @@ mod early;
 mod jira;
 mod reconcile;
 mod toggl;
+#[cfg(target_os = "macos")]
+mod tray_mac;
 mod youtrack;
 
 use chrono::NaiveDate;
@@ -11,7 +13,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
-    tray::TrayIconEvent,
     Emitter, Manager,
 };
 
@@ -39,6 +40,8 @@ struct PreviewOp {
     /// Local day (`YYYY-MM-DD`) of the work item the op touches.
     day: String,
     action: String, // "ok" | "create" | "update" | "delete" | "blocked"
+    /// Human label of the action: Add, Shorten, Lengthen, Update, Delete, …
+    verb: String,
     issue: String,
     minutes: i64,
     detail: String,
@@ -305,13 +308,32 @@ async fn build_yt_plan(cfg: &config::AppConfig, from: &str, to: &str) -> Result<
     };
 
     // Resolve keys (legacy aliases → YouTrack ids) only for entries that get planned.
+    // A key that already appears as an issue id on our work items is a valid
+    // YouTrack id; only the rest (new issues, legacy aliases) cost a lookup,
+    // run a few at a time — one by one this took ~15 s for a fortnight.
+    let known_issues: HashSet<&str> = existing.iter().map(|x| x.issue.as_str()).collect();
     let mut resolved: HashMap<String, Result<String, String>> = HashMap::new();
+    let mut lookups = tokio::task::JoinSet::new();
+    let limit = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
     for e in entries.iter().filter(|e| in_window(e) || with_items.contains(e.id.as_str())) {
         for k in &e.jira_keys {
-            if !resolved.contains_key(k) {
-                resolved.insert(k.clone(), youtrack::resolve_issue_id(k).await);
+            if resolved.contains_key(k) { continue; }
+            if known_issues.contains(k.as_str()) {
+                resolved.insert(k.clone(), Ok(k.clone()));
+                continue;
             }
+            resolved.insert(k.clone(), Err(format!("{} not resolved", k)));
+            let (key, limit) = (k.clone(), limit.clone());
+            lookups.spawn(async move {
+                let _permit = limit.acquire_owned().await;
+                let r = youtrack::resolve_issue_id(&key).await;
+                (key, r)
+            });
         }
+    }
+    while let Some(done) = lookups.join_next().await {
+        let (key, r) = done.map_err(|e| format!("Issue lookup failed: {}", e))?;
+        resolved.insert(key, r);
     }
 
     let inputs: Vec<reconcile::EntryInput> = entries
@@ -356,9 +378,25 @@ fn describe_change(c: &reconcile::Change) -> String {
     use reconcile::Change;
     match c {
         Change::Duration { from, to } => format!("{} → {}", fmt_duration(*from), fmt_duration(*to)),
-        Change::Date { from, to } => format!("day {} → {}", fmt_day(*from), fmt_day(*to)),
-        Change::Type { .. } => "type".into(),
-        Change::Text => "text".into(),
+        Change::Date { from, to } => format!("moved {} → {}", fmt_day(*from), fmt_day(*to)),
+        Change::Type { .. } => "activity type".into(),
+        Change::Text => "note".into(),
+    }
+}
+
+fn verb_of(op: &reconcile::Op) -> &'static str {
+    use reconcile::{Change, Op};
+    match op {
+        Op::Keep { .. } => "Synced",
+        Op::Create { .. } => "Add",
+        Op::Update { changes, .. } => match changes.as_slice() {
+            [Change::Duration { from, to }] if to < from => "Shorten",
+            [Change::Duration { .. }] => "Lengthen",
+            [Change::Date { .. }] => "Move",
+            _ => "Update",
+        },
+        Op::Delete { .. } => "Delete",
+        Op::Blocked { .. } => "Can't sync",
     }
 }
 
@@ -381,7 +419,7 @@ fn preview_op(op: &reconcile::Op) -> PreviewOp {
             Some(*date_ms),
             match reason {
                 DeleteReason::Orphan => "entry deleted",
-                DeleteReason::NotTarget => "issue changed",
+                DeleteReason::NotTarget => "ticket changed",
                 DeleteReason::Duplicate => "duplicate",
             }
             .into(),
@@ -392,6 +430,7 @@ fn preview_op(op: &reconcile::Op) -> PreviewOp {
         entry_id: op.entry_id().to_string(),
         day: date_ms.map(|ms| ms_day(ms).format("%Y-%m-%d").to_string()).unwrap_or_default(),
         action: action.into(),
+        verb: verb_of(op).into(),
         issue,
         minutes,
         detail,
@@ -586,6 +625,7 @@ async fn preview_jira(from: &str, to: &str) -> Result<PreviewResponse, String> {
                     entry_id: e.id.clone(),
                     day: entry_day(e).format("%Y-%m-%d").to_string(),
                     action: if done { "ok" } else { "create" }.into(),
+                    verb: if done { "Synced" } else { "Add" }.into(),
                     issue: k.clone(),
                     minutes: per_key,
                     detail: String::new(),
@@ -855,14 +895,15 @@ pub fn run() {
             tray.set_menu(Some(menu))?;
             tray.set_show_menu_on_left_click(false)?;
 
-            tray.on_tray_icon_event(move |_tray, event| {
-                if let TrayIconEvent::Click { position, button, button_state, .. } = event {
-                    if matches!(button, tauri::tray::MouseButton::Left)
-                        && matches!(button_state, tauri::tray::MouseButtonState::Up) {
-                        show_window(&handle_tray, position);
-                    }
+            // Left click opens the panel, right click the menu (see tray_mac).
+            #[cfg(target_os = "macos")]
+            tray.with_inner_tray_icon(move |inner| {
+                if let Some(item) = inner.ns_status_item() {
+                    tray_mac::install(&item, move |x| {
+                        show_window(&handle_tray, tauri::PhysicalPosition::new(x, 0.0));
+                    });
                 }
-            });
+            })?;
 
             app.on_menu_event(move |app, event| {
                 match event.id().as_ref() {
@@ -910,3 +951,4 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+

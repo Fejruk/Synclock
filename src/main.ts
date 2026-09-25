@@ -35,7 +35,7 @@ const fmtTime = (iso: string) => {
 
 type Action = "ok" | "create" | "update" | "delete" | "blocked";
 interface PreviewOp {
-  entry_id: string; day: string; action: Action;
+  entry_id: string; day: string; action: Action; verb: string;
   issue: string; minutes: number; detail: string;
 }
 interface PreviewItem {
@@ -256,12 +256,25 @@ const actionTag: Record<Action, string> = {
 };
 const fmtDay = (day: string) => day ? new Date(day + "T12:00:00").toLocaleDateString("cs-CZ", { day: "numeric", month: "numeric" }) : "";
 
-function opTag(op: PreviewOp) {
-  const label = op.action === "ok" ? op.issue : `${op.action === "create" ? "+" : op.action === "delete" ? "−" : "~"} ${op.issue}`;
-  const title = [op.action, fmtDur(op.minutes), op.detail].filter(Boolean).join(" · ");
+const signedDur = (min: number) => `${min < 0 ? "−" : "+"}${fmtDur(Math.abs(min))}`;
+
+function ticketTag(op: PreviewOp) {
+  const title = op.action === "ok" ? "Synced" : [op.verb, op.detail].filter(Boolean).join(" · ");
   return op.action === "blocked"
-    ? `<span class="tag tag-d" title="${esc(op.detail)}">!</span>`
-    : `<span class="tag ${actionTag[op.action]}" title="${esc(title)}">${esc(label)}</span>`;
+    ? `<span class="tag tag-d" title="${esc(op.detail)}">${esc(op.verb)}</span>`
+    : `<span class="tag ${actionTag[op.action]}" title="${esc(title)}">${esc(op.issue)}</span>`;
+}
+
+// One readable line per pending change, e.g. "Shorten SIG-523 · 26. 9. · 1h → 45m".
+function changeRow(op: PreviewOp) {
+  const parts = [
+    op.issue ? `<b>${esc(op.issue)}</b>` : "",
+    fmtDay(op.day),
+    // Shorten/Lengthen already say "1h → 45m" in the detail.
+    op.verb === "Shorten" || op.verb === "Lengthen" || op.action === "blocked" ? "" : fmtDur(op.minutes),
+    esc(op.detail),
+  ].filter(Boolean);
+  return `<div class="other-r"><span class="tag ${actionTag[op.action]}">${esc(op.verb)}</span> ${parts.join(" · ")}</div>`;
 }
 
 function renderPreview(data: PreviewResponse) {
@@ -270,39 +283,34 @@ function renderPreview(data: PreviewResponse) {
 
   const s = data.summary;
   const totalMin = data.items.reduce((acc, i) => acc + i.duration_min, 0);
+  const pending = [
+    ...data.items.flatMap((i) => i.ops.filter((o) => o.action !== "ok")),
+    ...data.other_ops,
+  ].sort((a, b) => a.day.localeCompare(b.day));
   const changes = s.create + s.update + s.delete;
-  const synced = data.items.filter((i) => i.synced).length;
+  const net = s.minutes_missing - s.minutes_extra;
 
   $("summary").innerHTML = [
     `<div class="st"><b>${data.total}</b> entries</div>`,
     `<div class="st"><b>${fmtDur(totalMin)}</b> total</div>`,
-    synced ? `<div class="st"><b>${synced}</b> synced</div>` : '',
-    s.create ? `<div class="st"><b>${s.create}</b> to add</div>` : '',
-    s.update ? `<div class="st"><b>${s.update}</b> to update</div>` : '',
-    s.delete ? `<div class="st"><b>${s.delete}</b> to delete</div>` : '',
-    s.blocked ? `<div class="st"><b>${s.blocked}</b> blocked</div>` : '',
-    s.minutes_missing ? `<div class="st"><b>+${fmtDur(s.minutes_missing)}</b> missing</div>` : '',
-    s.minutes_extra ? `<div class="st"><b>−${fmtDur(s.minutes_extra)}</b> extra</div>` : '',
+    changes ? `<div class="st"><b>${changes}</b> ${changes === 1 ? "change" : "changes"} to sync</div>` : '',
   ].filter(Boolean).join('');
 
   if (data.items.length === 0) {
     $("entries").innerHTML = '<div class="empty">No entries for this day</div>';
   } else {
     $("entries").innerHTML = data.items.map((item) => {
-      const pending = item.ops.some((o) => o.action !== "ok");
-      const details = item.ops.filter((o) => o.detail && o.action !== "blocked").map((o) => `${o.issue}: ${o.detail}`);
-      const blocked = item.ops.filter((o) => o.action === "blocked").map((o) => o.detail);
+      const isPending = item.ops.some((o) => o.action !== "ok");
       return `
-      <div class="ent${pending || (item.has_jira_key && !item.synced) ? "" : " ent-dim"}">
+      <div class="ent${isPending || (item.has_jira_key && !item.synced) ? "" : " ent-dim"}">
         <div class="ent-d" data-color="${esc(item.activity_color)}"></div>
         <div class="ent-b">
           <div class="ent-t">${esc(item.activity)}${item.synced ? '<span class="ent-sd">synced</span>' : ""}</div>
           <div class="ent-s">${fmtTime(item.started_at)} – ${fmtTime(item.stopped_at)}${item.note ? " · " + esc(item.note) : ""}</div>
-          ${details.length || blocked.length ? `<div class="ent-op">${esc([...details, ...blocked].join(" · "))}</div>` : ""}
         </div>
         <div class="ent-r">
           <div class="ent-dur">${fmtDur(item.duration_min)}</div>
-          ${item.ops.length ? item.ops.map(opTag).join(" ") : item.jira_keys.map((k) => `<span class="tag tag-j">${esc(k)}</span>`).join(" ")}
+          ${item.ops.length ? item.ops.map(ticketTag).join(" ") : item.jira_keys.map((k) => `<span class="tag tag-j">${esc(k)}</span>`).join(" ")}
           ${!item.has_jira_key ? '<span class="tag tag-n">–</span>' : ""}
         </div>
       </div>
@@ -311,13 +319,10 @@ function renderPreview(data: PreviewResponse) {
     applyDotColors($("entries"));
   }
 
-  const other = data.other_ops;
-  $("otherOps").innerHTML = other.length === 0 ? "" : `
-    <div class="other-h">Other days ${fmtDay(s.window_from)}–${fmtDay(s.window_to)}</div>
-    ${other.map((o) => `
-      <div class="other-r">
-        ${opTag(o)} <b>${fmtDay(o.day)}</b> ${fmtDur(o.minutes)}${o.detail ? " · " + esc(o.detail) : ""}
-      </div>`).join("")}
+  const scope = s.window_from ? ` (${fmtDay(s.window_from)}–${fmtDay(s.window_to)})` : "";
+  $("otherOps").innerHTML = pending.length === 0 ? "" : `
+    <div class="other-h">Sync will${scope}:${net ? ` <span title="Change of total logged time in the target">${signedDur(net)} in ${esc($("targetLabel").textContent || "target")}</span>` : ""}</div>
+    ${pending.map(changeRow).join("")}
   `;
 
   ($("btnSync") as HTMLButtonElement).disabled = changes === 0;
@@ -326,19 +331,28 @@ function renderPreview(data: PreviewResponse) {
     : s.deletes_need_confirm ? "Deletions will ask for confirmation" : "";
 }
 
+// Panel opening, day changes and saving settings can each start a preview;
+// only the most recent one may render.
+let previewSeq = 0;
+
 async function doPreview() {
+  const seq = ++previewSeq;
   const day = dateStr(currentDate);
   const refreshBtn = $("btnRefresh");
   refreshBtn.classList.add("spinning");
   $("previewSection").style.display = "block";
   $("entries").innerHTML = '<div class="empty">Loading...</div>';
+  $("otherOps").innerHTML = '';
   $("summary").innerHTML = '';
+  $("syncHint").textContent = '';
+  ($("btnSync") as HTMLButtonElement).disabled = true;
   try {
-    renderPreview(await invoke<PreviewResponse>("preview", { from: day, to: day }));
+    const data = await invoke<PreviewResponse>("preview", { from: day, to: day });
+    if (seq === previewSeq) renderPreview(data);
   } catch (e) {
-    $("entries").innerHTML = `<div class="empty">${esc(String(e))}</div>`;
+    if (seq === previewSeq) $("entries").innerHTML = `<div class="empty">${esc(String(e))}</div>`;
   } finally {
-    refreshBtn.classList.remove("spinning");
+    if (seq === previewSeq) refreshBtn.classList.remove("spinning");
   }
 }
 
@@ -346,9 +360,9 @@ const logLine = (r: SyncResultItem) => {
   const what = `${esc(r.issue_key)} ${r.duration ? "· " + esc(r.duration) : ""}`;
   if (!r.success) return `<div class="l-er">✗ ${esc(r.action)} ${what} ${esc(r.error)}</div>`;
   switch (r.action) {
-    case "create": return `<div class="l-ok">+ ${what}</div>`;
-    case "update": return `<div class="l-ok">~ ${what}</div>`;
-    case "delete": return `<div class="l-ok">− ${what}</div>`;
+    case "create": return `<div class="l-ok">✓ Added ${what}</div>`;
+    case "update": return `<div class="l-ok">✓ Updated ${what}</div>`;
+    case "delete": return `<div class="l-ok">✓ Deleted ${what}</div>`;
     default: return `<div class="l-dm">– ${esc(r.issue_key)} synced</div>`;
   }
 };
@@ -381,7 +395,7 @@ async function doSync(confirmedDeletes: string[] = []) {
     pendingDeleteIds = data.pending_deletes.map((d) => d.item_id);
     if (pending > 0) {
       html += `<div class="l-dm l-sum">Awaiting confirmation:</div>` + data.pending_deletes.map((d) =>
-        `<div class="l-er">? − ${esc(d.issue)} · ${fmtDay(d.day)} · ${fmtDur(d.minutes)} · ${esc(d.activity)} (${esc(d.reason)})</div>`
+        `<div class="l-er">Delete ${esc(d.issue)} · ${fmtDay(d.day)} · ${fmtDur(d.minutes)} · ${esc(d.activity)} · ${esc(d.reason)}</div>`
       ).join("");
       log.innerHTML = html;
       $("confirmHint").textContent = `${pending} work items to delete — review them above.`;

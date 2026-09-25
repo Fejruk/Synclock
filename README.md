@@ -10,9 +10,9 @@ A lightweight macOS menubar app that syncs time entries from [Early](https://ear
 - **Multiple targets** — sync into Jira worklogs or YouTrack work items (switchable in settings)
 - **Smart matching** — extracts issue keys from `@PROJ-123` mentions (Early) or descriptions/tags (Toggl)
 - **Deduplication** — checks existing worklogs/work items before syncing, safe to run multiple times
-- **Two-way consistency (YouTrack)** — edits and deletions in the time tracker are propagated too: changed duration, issue, activity type or day is updated, deleted entries are removed
+- **Stays in sync (YouTrack)** — edits and deletions in the time tracker are propagated too: changed duration, issue, activity type or day is updated, deleted entries are removed
 - **Daily auto-sync** — automatically syncs at a configured time (e.g. 19:00)
-- **Right-click menu** — quick sync today, settings, quit
+- **Left-click panel, right-click menu** — quick sync today, settings, quit
 
 ## Installation
 
@@ -87,48 +87,111 @@ When YouTrack is the target and Early is the provider, Settings shows an **Activ
 
 ### Syncing
 
-1. Click the Synclock icon in the menu bar
+1. **Left-click** the Synclock icon in the menu bar to open the panel
 2. Navigate days using `‹` `›` arrows or click the date to pick one
-3. Review entries — those linked to Jira show a blue issue tag
-4. Click **Sync to Jira**
+3. Review entries — each shows its issue tag, colored by what the next sync will do
+4. Click **Sync to Jira** / **Sync to YouTrack**
 
-Already-synced entries appear dimmed with a "synced" label. The sync button is disabled when everything is up to date.
+Already-synced entries appear dimmed with a "synced" label. The sync button is disabled when everything is up to date ("All synced").
 
-With **YouTrack**, the preview tags every issue with what the sync will do — `+` add, `~` update (hover for what changes), `−` delete — and lists changes on other days of the sync window below the entries.
+### Reading the YouTrack preview
+
+The top row describes the **selected day**: number of entries, total time, and how many changes a sync would make (across the whole sync window, see below).
+
+Issue tags on entries are colored by the pending action — blue: in sync, green: will be added, yellow: will be updated, red: will be deleted. Hover a tag for details.
+
+Below the entries, **Sync will (from–to):** lists every pending change in the sync window, one line each, including changes on other days and work items of deleted entries:
+
+| Line | Meaning |
+|---|---|
+| `Add SIG-523 · 26. 9. · 30m` | New entry — a work item will be created |
+| `Shorten SIG-523 · 26. 9. · 30m → 15m` | Entry got shorter — the work item's duration is reduced |
+| `Lengthen SIG-523 · 26. 9. · 30m → 45m` | Entry got longer — the work item's duration is increased |
+| `Move SIG-523 · 24. 9. · 30m · moved 26. 9. → 24. 9.` | Entry moved to another day — the work item's date changes (the day shown is the new one) |
+| `Update SIG-523 · 26. 9. · 30m · note` | Note or activity type changed (or several things at once — all are listed) |
+| `Delete SIG-523 · 26. 9. · 30m · entry deleted` | Entry no longer exists — its work item will be removed |
+| `Delete SIG-523 · … · ticket changed` | Entry now points to another issue — removed here, added there (a separate `Add` line) |
+| `Delete SIG-523 · … · duplicate` | Two work items belong to the same entry and issue — one is kept |
+| `Can't sync` | The issue key could not be resolved in YouTrack; this entry and its work items are left untouched |
+
+The header also shows the net effect on logged time, e.g. `−15m in YouTrack` (omitted when it evens out).
 
 ### Keeping YouTrack in line with the tracker
 
-Every YouTrack sync reconciles the whole **sync window** (the last 14 days by default, plus the selected day if it is older), not just the day on screen:
+With YouTrack as the target, Synclock does not just add new time — it keeps YouTrack **identical** to Early/Toggl: whatever you change or delete in the time tracker is changed or deleted in YouTrack on the next sync.
 
-- new entries are added,
-- entries whose duration, activity type, day or note changed are updated in place,
-- entries moved to another issue are removed from the old issue and added to the new one,
-- entries deleted in the tracker — including ones Early deletes silently when another entry is stretched over them — are removed from YouTrack.
+#### The sync window
 
-Only work items **you** created **through Synclock** (they carry the hidden marker) are ever changed or deleted; work items typed into YouTrack by hand are left alone. An Early activity without a mapped work item type leaves the item's type untouched.
+Every YouTrack sync reconciles the whole **sync window** — the last **14 days** up to today by default (Settings → YouTrack → *Sync window*, 1–90 days) — not just the day on screen. If you pick a day older than that, the window stretches back to include it. Manual sync, **Sync Today** and the daily auto-sync all use the same window.
 
-Deletions are guarded: if a sync would delete more than the configured limit (10 by default), or the tracker returned no entries at all for the window, deletions are held back. The panel then shows a **Delete N** button; background syncs send a notification instead. Window size and limit are in Settings → YouTrack.
+On top of the window, Synclock also loads **31 days on each side** as a safety buffer. Entries in the buffer are never *added* to YouTrack, but if one of them already has a work item, that work item keeps following it (so an entry moved just outside the window is updated, not deleted).
 
-### Right-click menu
+#### What happens when you…
 
-- **Sync Today** — quick-sync without opening the panel
-- **Settings** — open the settings view
-- **Quit** — exit Synclock
+| You do in Early/Toggl | Next sync in YouTrack |
+|---|---|
+| create an entry with an issue key | work item **added** |
+| shorten / lengthen it | same work item, **duration updated** |
+| edit the note | same work item, **text updated** |
+| change the activity (Early) | same work item, **type updated** — only if the new activity has a mapped work item type; unmapped activities leave the type as it is |
+| change only the start/end time within the same day | nothing — YouTrack stores the day, not the time (duration changes still apply) |
+| **move it to another day** | same work item, **date updated** (`Move`) — no duplicate is created |
+| change the issue key | work item **deleted** on the old issue, **added** on the new one |
+| add a second issue key | the time is split between the issues: the existing work item shrinks, a new one is added |
+| remove the issue key | work item **deleted** (or moved to the default task if one is configured) |
+| delete the entry | work item **deleted** |
+
+#### Moving an entry to another day — details
+
+The work item is matched to its entry by the hidden marker, not by date, so a moved entry keeps its work item:
+
+- **New day inside the window** → the work item's date is changed. Nothing is added or removed.
+- **New day older than the window, but within the 31-day buffer** → still just a date change.
+- **New day even further back** (roughly more than 45 days ago with the default window) → the entry is out of reach, so the work item left in the window looks orphaned and is **deleted**. The entry is logged again on its new day as soon as you select that day in the panel and click Sync (the window stretches to it).
+- **New day in the future** → handled the same way (the buffer covers 31 days ahead).
+
+> **Watch out for overlaps in Early.** When you move or stretch an entry over another one, Early silently deletes the entry underneath. Synclock mirrors Early, so the work item of that deleted entry is removed from YouTrack too. Check the preview for unexpected `Delete … entry deleted` lines before syncing.
+
+#### What is never touched
+
+- Work items you entered in YouTrack **by hand** (they have no Synclock marker).
+- Work items of **other people** — only your own work items are loaded, and the author is checked again.
+- Work items created from **another provider** (switching Early ↔ Toggl never deletes the other one's items).
+- Work items **outside the window** whose entry cannot be found — only items inside the window are ever considered orphaned.
+
+#### Safety limits for deletions
+
+Deletions run automatically only when they look routine. A sync **holds deletions back** when:
+
+- it would delete more than the limit (Settings → YouTrack → *Deletions without confirmation*, default **10**), or
+- the time tracker returned **no entries at all** for the window (more likely an outage than a cleared fortnight).
+
+Adds and updates still go through. In the panel, the log then lists the held-back work items and a **Delete N** button deletes exactly those — nothing a fresh sync might have found in the meantime. Background syncs (auto-sync, Sync Today) send a notification instead.
+
+If loading entries or work items fails, the sync stops without changing anything. If one operation fails, the error is shown in the log and the rest continue; the next sync retries it.
+
+### Menu bar icon
+
+- **Left-click** — open or close the panel
+- **Right-click** (or Ctrl-click) — menu:
+  - **Sync Today** — quick-sync without opening the panel
+  - **Settings** — open the settings view
+  - **Quit** — exit Synclock
 
 ### Daily auto-sync
 
-Enable in Settings → Daily Auto-Sync. Choose a time (e.g. `19:00`) and Synclock will automatically sync the current day's entries once per day at that time. With YouTrack, the auto-sync reconciles the whole sync window, including deletions within the limit above.
+Enable in Settings → Daily Auto-Sync. Choose a time (e.g. `19:00`) and Synclock will automatically sync once per day at that time. With Jira it syncs the current day; with YouTrack it reconciles the whole sync window, including deletions within the limit above.
 
 ## How it works
 
-1. Fetches time entries from Early or Toggl API for the selected day
-2. Extracts issue keys from mentions, tags, or descriptions
-3. Checks existing worklogs/work items in the selected target to skip duplicates
-4. Creates new worklogs via the Jira REST API, or new work items via the YouTrack REST API
+1. Fetches time entries from Early or Toggl (for YouTrack: the sync window plus buffer)
+2. Extracts issue keys from mentions, tags, or descriptions (falling back to the default task, if set)
+3. Loads existing worklogs/work items from the target
+4. Jira: creates the worklogs that are missing. YouTrack: compares entries with work items and creates, updates or deletes work items to match
 
-**Jira deduplication** matches by start time (±2 min) and duration (±1 min).
+**Jira deduplication** matches by start time (±2 min) and duration (±1 min). Jira sync only ever adds worklogs; edits and deletions are not propagated.
 
-**YouTrack deduplication** matches by a hidden marker (`[synclock:{provider}-{entry_id}]`) appended to the work item text — works even if the day already has multiple entries with the same duration and description. The same marker ties each work item back to its entry, which is how edits and deletions are detected: Synclock loads your work items for the window in one request and compares them with the entries.
+**YouTrack matching** uses a hidden marker (`[synclock:{provider}-{entry_id}]`) appended to the work item text. It ties each work item to exactly one time entry, so it works even with several identical entries on one day, and it is what lets Synclock recognize edited, moved and deleted entries. All of your work items for the window are loaded in a single paginated request (`/api/workItems?author=me`); issue keys that are not yet known (new issues, legacy aliases migrated from Jira) are resolved in parallel.
 
 ## Configuration
 
