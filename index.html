@@ -197,6 +197,8 @@
     .map-row .map-act .map-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
     .map-row select { flex: 1; }
     .set-hint { color: var(--dim); font-size: 10px; }
+    .about { margin-top: 14px; text-align: center; font-size: 10px; color: var(--dim); }
+    .about a { color: var(--accent); text-decoration: none; cursor: pointer; }
     #btnRefresh { font-size: 14px; }
     #btnSettings { font-size: 20px; }
     /* Hidden until main.ts toggles them (inline style attributes are blocked by the CSP) */
@@ -370,6 +372,7 @@
         <button class="btn btn-g" id="btnSettingsCancel">Cancel</button>
         <button class="btn btn-p" id="btnSettingsSave">Save</button>
       </div>
+      <div class="about" id="about"></div>
     </div>
 
   </div>

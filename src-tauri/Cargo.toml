@@ -3,6 +3,7 @@ name = "synclock"
 version = "0.4.0"
 description = "Sync time entries from Early/Toggl to Jira worklogs or YouTrack work items"
 authors = ["Tadeáš Kulhánek"]
+repository = "https://github.com/Fejruk/Synclock"
 edition = "2021"
 
 [lib]

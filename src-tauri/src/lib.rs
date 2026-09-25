@@ -719,6 +719,16 @@ async fn sync(from: String, to: String, confirmed_deletes: Option<Vec<String>>) 
     }
 }
 
+/// Version, author and repository from Cargo.toml, shown in Settings.
+#[tauri::command]
+fn app_info() -> serde_json::Value {
+    serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "author": env!("CARGO_PKG_AUTHORS").replace(':', ", "),
+        "repository": env!("CARGO_PKG_REPOSITORY"),
+    })
+}
+
 #[tauri::command]
 async fn get_settings() -> config::AppConfig {
     config::get_config().await
@@ -947,7 +957,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![check_status, preview, sync, get_settings, save_settings, get_early_activities, get_youtrack_work_item_types])
+        .invoke_handler(tauri::generate_handler![app_info, check_status, preview, sync, get_settings, save_settings, get_early_activities, get_youtrack_work_item_types])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

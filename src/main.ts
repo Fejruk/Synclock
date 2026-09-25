@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 const $ = (id: string) => document.getElementById(id)!;
 const esc = (s: string | null | undefined) => {
@@ -548,10 +549,24 @@ async function saveSettings() {
   } catch (e) { alert("Error saving: " + e); }
 }
 
+// ── About ──
+
+interface AppInfo { version: string; author: string; repository: string; }
+
+async function renderAbout() {
+  try {
+    const info = await invoke<AppInfo>("app_info");
+    $("about").innerHTML =
+      `Synclock v${esc(info.version)} · ${esc(info.author)} · <a id="aboutRepo">GitHub</a>`;
+    $("aboutRepo").addEventListener("click", () => openUrl(info.repository));
+  } catch { /* purely informational */ }
+}
+
 // ── Init ──
 
 window.addEventListener("DOMContentLoaded", () => {
   updateDateLabel();
+  renderAbout();
 
   $("btnSync").addEventListener("click", () => doSync());
   $("btnConfirmDelete").addEventListener("click", () => doSync(pendingDeleteIds));
