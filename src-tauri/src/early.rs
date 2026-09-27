@@ -236,9 +236,13 @@ pub fn extract_jira_keys(entry: &TimeEntry) -> Vec<String> {
                 }
             }
         }
-        if let Some(text) = &note.text {
-            for m in re.find_iter(text) {
-                keys.insert(m.as_str().to_string());
+        // Keys in free text are only a fallback: with an explicit mention/tag,
+        // an incidental reference like "same bug as SIG-123" must not add a worklog.
+        if keys.is_empty() {
+            if let Some(text) = &note.text {
+                for m in re.find_iter(text) {
+                    keys.insert(m.as_str().to_string());
+                }
             }
         }
     }
@@ -303,6 +307,18 @@ mod tests {
         let mut keys = extract_jira_keys(&entry);
         keys.sort();
         assert_eq!(keys, vec!["API-55", "CORE-10"]);
+    }
+
+    #[test]
+    fn extract_keys_explicit_mention_wins_over_note_text() {
+        let entry = make_entry(Some("analýza problému u SIG-123"), vec![("SYNC-42", 1)], vec![]);
+        assert_eq!(extract_jira_keys(&entry), vec!["SYNC-42"]);
+    }
+
+    #[test]
+    fn extract_keys_explicit_tag_wins_over_note_text() {
+        let entry = make_entry(Some("see SIG-123"), vec![], vec![("WEB-789", 1)]);
+        assert_eq!(extract_jira_keys(&entry), vec!["WEB-789"]);
     }
 
     #[test]

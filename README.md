@@ -81,9 +81,9 @@ When YouTrack is the target and Early is the provider, Settings shows an **Activ
 
 ### Linking time entries to Jira issues
 
-**Early:** Type `@PROJ-123` in the time entry notes. Early creates a mention that Synclock picks up automatically.
+**Early:** Type `@PROJ-123` in the time entry notes. Early creates a mention that Synclock picks up automatically. A plain `PROJ-123` in the note text is used only when the entry has no issue mention or tag.
 
-**Toggl:** Include the issue key anywhere in the description (e.g. `PROJ-123 Standup`) or add it as a tag.
+**Toggl:** Add the issue key as a tag, or include it anywhere in the description (e.g. `PROJ-123 Standup`). When a tag holds an issue key, keys in the description are ignored.
 
 ### Syncing
 

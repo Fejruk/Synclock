@@ -51,19 +51,23 @@ pub async fn get_time_entries(from: &str, to: &str) -> Result<Vec<TogglTimeEntry
     Ok(entries.into_iter().filter(|e| e.duration > 0).collect())
 }
 
-/// Extract Jira issue keys from entry description and tags
+/// Extract Jira issue keys from entry tags, falling back to the description
 pub fn extract_jira_keys(entry: &TogglTimeEntry) -> Vec<String> {
     let re = regex_lite::Regex::new(r"\b([A-Z][A-Z0-9]+-\d+)\b").unwrap();
     let mut keys = std::collections::HashSet::new();
 
-    if let Some(desc) = &entry.description {
-        for m in re.find_iter(desc) {
-            keys.insert(m.as_str().to_string());
-        }
-    }
     if let Some(tags) = &entry.tags {
         for tag in tags {
             for m in re.find_iter(tag) {
+                keys.insert(m.as_str().to_string());
+            }
+        }
+    }
+    // The description is only a fallback: with a key tag, an incidental
+    // reference like "same bug as SIG-123" must not add a worklog.
+    if keys.is_empty() {
+        if let Some(desc) = &entry.description {
+            for m in re.find_iter(desc) {
                 keys.insert(m.as_str().to_string());
             }
         }
@@ -127,6 +131,18 @@ mod tests {
         let mut keys = extract_jira_keys(&e);
         keys.sort();
         assert_eq!(keys, vec!["BACK-7", "FE-19"]);
+    }
+
+    #[test]
+    fn tag_wins_over_description() {
+        let e = entry(Some("analysis of SIG-123"), Some(vec!["TICK-301"]));
+        assert_eq!(extract_jira_keys(&e), vec!["TICK-301"]);
+    }
+
+    #[test]
+    fn non_key_tags_fall_back_to_description() {
+        let e = entry(Some("TICK-301 Standup"), Some(vec!["billable"]));
+        assert_eq!(extract_jira_keys(&e), vec!["TICK-301"]);
     }
 
     #[test]
